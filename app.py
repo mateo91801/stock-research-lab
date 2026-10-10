@@ -34,8 +34,8 @@ st.markdown("""<style>
 </style>""", unsafe_allow_html=True)
 
 @st.cache_data(ttl=60*60*3, show_spinner=False)
-def cached_fetch(ticker: str):
-    return fetch_stock(ticker)
+def cached_fetch(ticker: str, sec_user_agent: str):
+    return fetch_stock(ticker, sec_user_agent=sec_user_agent)
 
 
 def text_card(title, value, subtitle=''):
@@ -80,11 +80,19 @@ with st.expander('Quick examples', expanded=False):
 
 try:
     with st.spinner('Fetching market prices and annual financial statements...'):
-        d = cached_fetch(st.session_state.ticker)
+        try:
+            sec_ua = st.secrets.get('SEC_USER_AGENT', '')
+        except Exception:
+            sec_ua = ''
+        d = cached_fetch(st.session_state.ticker, sec_ua)
 except Exception as exc:
     st.error(f"Unable to analyze {st.session_state.ticker}: {exc}")
     st.info('The app needs an internet connection. Yahoo may also temporarily throttle free requests. Please retry later.')
     st.stop()
+
+if d.get('sec_status'):
+    st.warning('Annual financial-data note: ' + d['sec_status'])
+st.caption('Data used: ' + d.get('data_provider', 'Price source unavailable'))
 
 v = d['values']
 frame = annual_frame(v)
@@ -175,9 +183,9 @@ if not frame.empty:
         for c in show.columns[1:]: show[c]=show[c].apply(format_billions)
         show.columns=['Fiscal year end','Revenue','Operating profit','Net income','Operating cash flow','Free cash flow']
         st.dataframe(show.iloc[::-1],hide_index=True,use_container_width=True)
-    st.caption('Annual figures from Yahoo Finance financial statements. Fiscal-year-end dates are not earnings release dates.')
+    st.caption('Annual figures from the named data provider above. Fiscal-year-end dates are not earnings release dates.')
 else:
-    st.info('Annual financial statements unavailable from the free data source.')
+    st.info('Annual statements not available. For SEC-sourced annual data, configure SEC_USER_AGENT in your Streamlit app secrets with a real contact email. Some companies have limited standardized filings.')
 
 st.markdown('### 3 · Historical valuation')
 st.caption('Price / operating cash flow (P/OCF): how much investors paid for each $1 of annual operating cash flow.')
@@ -229,11 +237,12 @@ with st.expander('See the actual stock price chart (different from valuation!)')
 
 st.divider()
 st.markdown('#### Data quality & important limitations')
-st.caption('For individual U.S. companies. Price history and financial statements come from Yahoo Finance '
-           'using the unofficial yfinance library; updates, coverage, and access are not guaranteed. '
+st.caption('For individual U.S. companies. Prices come from Yahoo Finance (unofficial yfinance library); '
+           'annual statements come from Yahoo Finance or the SEC EDGAR filing fallback. '
+           'Updates, coverage, and access are not guaranteed. '
            'This is a research aid, not investment advice. The stage and valuation calculations are '
            'transparent interpretations, not a reproduction of Stock Simplifier’s proprietary charts. '
            'Always verify important numbers against the company’s 10-K / 10-Q filings before investing.')
-st.markdown('Financial statements: [Yahoo Finance](https://finance.yahoo.com) · '
-            'Verify filings: [SEC EDGAR](https://www.sec.gov/edgar/search/) · '
+st.markdown('Financial statements: [Yahoo Finance](https://finance.yahoo.com) and '
+            '[SEC EDGAR](https://www.sec.gov/edgar/search/) · '
             'Lifecycle framework: [Brian Feroldi Phase Check](https://stocksimplifier.com/phase-check)')

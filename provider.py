@@ -1,7 +1,6 @@
-"""Market data adapter (Yahoo Finance via yfinance; unofficial and may be limited)."""
+"""Price data via Yahoo Finance; annual SEC EDGAR fallback for fundamentals."""
 from __future__ import annotations
 import re
-from dataclasses import dataclass
 import pandas as pd
 
 FIELDS = {
@@ -35,7 +34,7 @@ def blank():
     return pd.DataFrame()
 
 
-def fetch_stock(ticker: str) -> dict:
+def fetch_stock(ticker: str, sec_user_agent: str = "") -> dict:
     """Returns live-source data or raises; never fabricates missing figures."""
     import yfinance as yf
     ticker = (ticker or '').strip().upper().replace('.', '-')
@@ -75,6 +74,27 @@ def fetch_stock(ticker: str) -> dict:
         'dividends': row_from(cash, FIELDS['dividends']),
         'shares': row_from(balance, FIELDS['shares']),
     }
+    # Yahoo sometimes returns prices and quote metadata but empty annual financials.
+    # In that case use official SEC structured filings for US SEC registrants.
+    source = 'Yahoo Finance (unofficial yfinance)'
+    sec_status = ''
+    if values['revenue'].empty or values['ocf'].empty or values['shares'].empty:
+        try:
+            from sec_fundamentals import load_financials
+            sec_values, company_from_sec = load_financials(ticker, sec_user_agent)
+            for name, sec_series in sec_values.items():
+                if name in values and not sec_series.empty:
+                    # Prefer one internally consistent annual SEC dataset; do not
+                    # combine different reporting years from unrelated source sets.
+                    values[name] = sec_series
+            if not values['revenue'].empty:
+                source = 'SEC EDGAR XBRL (annual financials) + Yahoo Finance (prices)'
+            else:
+                sec_status = 'SEC filing response did not contain an annual revenue tag for this stock.'
+            if not info.get('longName') and not info.get('shortName'):
+                info['shortName'] = company_from_sec
+        except Exception as exc:
+            sec_status = str(exc)
     price.index = pd.to_datetime(price.index)
     if price.index.tz is not None: price.index = price.index.tz_localize(None)
     price = price.sort_index()
@@ -83,4 +103,4 @@ def fetch_stock(ticker: str) -> dict:
             'currency':info.get('currency') or 'USD', 'exchange':info.get('exchange') or '',
             'values':values, 'prices':price, 'splits':splits, 'dividends_history':dividends,
             'price_latest':float(price.Close.dropna().iloc[-1]), 'price_asof':str(price.Close.dropna().index[-1].date()),
-            'data_provider':'Yahoo Finance (via yfinance; unofficial)'}
+            'data_provider':source, 'sec_status':sec_status}
