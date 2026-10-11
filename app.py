@@ -14,6 +14,9 @@ from valuation_metrics import usable_history
 from data_quality import fiscal_year, audit_rows
 from chart_helpers import revenue_cash_flow_figure
 from valuation_view import valuation_viewport, multiple_figure
+from research_explainer import (fiscal_yoy, headline_reading, growth_reading,
+                                margin_reading, valuation_reading,
+                                verification_reading, GLOSSARY)
 
 st.set_page_config(page_title="Stock Research Lab", page_icon="📈", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -110,7 +113,7 @@ def annual_frame(values):
         out[key] = align(values[key], dates) if dates else []
     return out
 
-st.markdown('<div class="sr-head">Independent research dashboard · v1.4.3</div>', unsafe_allow_html=True)
+st.markdown('<div class="sr-head">Independent research dashboard · v1.4.4</div>', unsafe_allow_html=True)
 st.markdown('<div class="sr-hero">Stock Research Lab <span style="color:#94dac2">↗</span></div>', unsafe_allow_html=True)
 st.markdown('<div class="sr-dim">Understand the business. Identify its lifecycle. Put today’s valuation in context.</div>', unsafe_allow_html=True)
 st.write('')
@@ -178,9 +181,17 @@ mc = st.columns(4)
 with mc[0]: st.metric('Last closing price', f"${d['price_latest']:,.2f}")
 with mc[1]: st.metric('Latest annual revenue', format_billions(latest['revenue']) if latest is not None else 'N/A')
 with mc[2]:
-    growth = yoy(latest['revenue'], prior['revenue']) if latest is not None and prior is not None else None
+    growth = fiscal_yoy(latest, prior)
     st.metric('Revenue growth (FY)', f'{growth:+.1f}%' if growth is not None else 'N/A')
 with mc[3]: st.metric('Operating cash flow (FY)', format_billions(latest['ocf']) if latest is not None else 'N/A')
+
+# v1.4.4: Explain the actual headline readings, without generating any missing data.
+with st.container(border=True):
+    st.markdown('#### The numbers, explained')
+    for title, explanation in headline_reading(latest, prior, d.get('price_latest')):
+        st.markdown(f'**{title}:** {explanation}')
+    st.caption('Figures describe the latest available source reports. ' 
+               'They are not forecasts or recommendations to trade.')
 
 st.write('')
 st.markdown('### Business overview')
@@ -257,6 +268,7 @@ else:
                 'No automated red flag does NOT mean those years are verified.')
     if not flagged_count and not checked_count and not unverified_count:
         st.info('No revenue verification outcome available; inspect the report and original filings.')
+st.caption(verification_reading(audit))
 with st.expander('Data-quality report · year-by-year verification and sources'):
     st.write('**What the labels mean:** Cross-checked = matching fiscal periods agree within 2.5% '
              'between SEC and Yahoo; Discrepancy = conflicting or anomalous observation excluded '
@@ -343,19 +355,29 @@ st.caption('Compound annual growth rates (CAGR) use matching fiscal-year periods
 if frame.empty:
     st.info('Annual financial statements are required for the growth analysis.')
 else:
+    revenue_cagrs = {n: cagr(v['revenue'], n) for n in (1, 3, 5)}
+    earnings_cagrs = {n: cagr(v['net_income'], n) for n in (1, 3, 5)}
     c1, c2 = st.columns(2)
     with c1:
         st.markdown('#### Revenue growth')
         k1, k2, k3 = st.columns(3)
         for box, n, label in zip([k1,k2,k3], [1,3,5], ['1Y','3Y','5Y']):
-            res = cagr(v['revenue'], n)
+            res = revenue_cagrs[n]
             box.metric(f'{label} CAGR', f'{res:+.1f}%' if res is not None else 'N/A')
     with c2:
         st.markdown('#### Net income growth')
         k1, k2, k3 = st.columns(3)
         for box, n, label in zip([k1,k2,k3], [1,3,5], ['1Y','3Y','5Y']):
-            res = cagr(v['net_income'], n)
+            res = earnings_cagrs[n]
             box.metric(f'{label} CAGR', f'{res:+.1f}%' if res is not None else 'N/A')
+    with st.container(border=True):
+        st.markdown('**How to read these growth rates**')
+        st.markdown('**Sales:** ' + growth_reading(revenue_cagrs[1], revenue_cagrs[3],
+                                                      revenue_cagrs[5], 'revenue'))
+        st.markdown('**Earnings:** ' + growth_reading(earnings_cagrs[1], earnings_cagrs[3],
+                                                         earnings_cagrs[5], 'net_income'))
+        st.caption('CAGR smooths changes between two valid fiscal years. Compare it with actual annual '
+                   'results: uneven years can hide behind a single average.')
     st.markdown('#### Latest annual profitability')
     c1, c2, c3 = st.columns(3)
     if latest is not None:
@@ -375,6 +397,13 @@ else:
             st.caption('Free cash flow is unavailable because neither a trustworthy '
                        'reported FCF figure nor a matching operating cash flow and '
                        'capital-spending pair could be obtained. Missing capex is not zero.')
+    if latest is not None:
+        with st.container(border=True):
+            st.markdown('**What the profit margins mean, per $100 in sales**')
+            for explanation in margin_reading(*margins):
+                st.markdown(explanation)
+            st.caption('A higher margin is not automatically better across different industries. '
+                       'One-time expenses, acquisitions, and accounting choices can change the picture.')
     st.markdown('#### Growth across fiscal years')
     fig_growth=go.Figure()
     gdates=frame['date'].apply(lambda d: f'FY{fiscal_year(d)}')
@@ -441,6 +470,10 @@ if bands:
     m2.metric(f'{lookback_years}Y historical median', f'{median:.1f}×')
     m3.metric('Relative to median', f'{relative:+.1f}%')
     m4.metric('Historical zone', level)
+    with st.expander('In plain English: what does this valuation mean?', expanded=True):
+        for explanation in valuation_reading('P/OCF', current, median, level,
+                                             valuation_method, len(monthly)):
+            st.markdown(explanation)
     x0 = monthly.date.min() - pd.Timedelta(days=10)
     x1 = monthly.date.max() + pd.Timedelta(days=10)
     ceiling = max(1.14 * monthly.multiple.max(), 1.2 * bands['high'])
@@ -561,6 +594,17 @@ for metric, tab in [('pe',tab_pe), ('pfcf',tab_pfcf)]:
             v1.metric(f'Latest {metric_label}', f'{current14:.1f}×')
             v2.metric('Historical median', f'{median14:.1f}×')
             v3.metric('Relative valuation zone', zone14)
+            explanation14 = valuation_reading(metric_label, current14, median14,
+                                               zone14, method14, len(hist14))
+            st.markdown(explanation14[0])
+            with st.expander(f'Explain the {metric_label} history and limitations'):
+                st.markdown(explanation14[1])
+                if metric == 'pe':
+                    st.caption('Small positive earnings can make P/E unusually high. '
+                               'A negative earnings figure is not a meaningful positive P/E.')
+                else:
+                    st.caption('Near-zero free cash flow can produce extreme P/FCF readings; '
+                               'negative or unavailable free cash flow cannot support a positive multiple.')
             # v1.4.3: a presentation-only zoom for unusually high P/E or P/FCF
             # readings. The underlying historical series and percentile bands are
             # unchanged; missing or extreme data are NEVER silently replaced.
@@ -607,6 +651,12 @@ for metric, tab in [('pe',tab_pe), ('pfcf',tab_pfcf)]:
                             'year-to-date filings, and all financial numbers enter only after '
                             'their SEC filing dates. This is a **relative-history research tool**, '
                             'not intrinsic value or an investment recommendation.')
+
+with st.expander('Plain-English glossary · financial terms and abbreviations'):
+    st.caption('Definitions for interpreting the Lab. The same metric can be more or less useful '
+               'depending on the company and industry.')
+    for term, definition in GLOSSARY:
+        st.markdown(f'**{term}:** {definition}')
 
 with st.expander('See the actual stock price chart (different from valuation!)'):
     period=st.select_slider('Price history',options=['1Y','3Y','5Y','10Y'],value='5Y')
