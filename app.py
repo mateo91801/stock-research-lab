@@ -12,6 +12,7 @@ from valuation_history import monthly_valuation, annual_asfiled_monthly_valuatio
 from growth_analysis import cagr, percent_margin, last_two
 from valuation_metrics import usable_history
 from data_quality import fiscal_year, audit_rows
+from chart_helpers import revenue_cash_flow_figure
 
 st.set_page_config(page_title="Stock Research Lab", page_icon="📈", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -108,7 +109,7 @@ def annual_frame(values):
         out[key] = align(values[key], dates) if dates else []
     return out
 
-st.markdown('<div class="sr-head">Independent research dashboard · v1.4.1</div>', unsafe_allow_html=True)
+st.markdown('<div class="sr-head">Independent research dashboard · v1.4.2</div>', unsafe_allow_html=True)
 st.markdown('<div class="sr-hero">Stock Research Lab <span style="color:#94dac2">↗</span></div>', unsafe_allow_html=True)
 st.markdown('<div class="sr-dim">Understand the business. Identify its lifecycle. Put today’s valuation in context.</div>', unsafe_allow_html=True)
 st.write('')
@@ -237,30 +238,50 @@ with st.expander('Revenue segments & customers — source coverage'):
 
 st.markdown('### Data quality & source coverage')
 audit = d.get('quality_audit')
-if audit is not None:
-    flags = len(audit.hidden_years)
-    if flags:
-        st.warning(f'Annual revenue check: **{flags} fiscal year(s) flagged and withheld** from revenue growth and margin calculations: '
-                   + ', '.join(f'FY{y}' for y in audit.hidden_years) + '. See the data-quality report below.')
-    else:
-        st.success(f'Annual revenue checks found no isolated spikes or source discrepancies in {audit.checked_years} fiscal years. This is not a full filing audit.')
+if audit is None or audit.checked_years == 0:
+    st.info('**Unverified:** No annual revenue figures were available to compare. '
+            'Review the company’s original filings before relying on growth rates.')
 else:
-    st.info('Revenue verification not available from the current sources. Check the original filings before investing.')
-with st.expander('Data-quality report · flagged years and source details'):
-    st.write('**Reporting period rules:** Fiscal years ending in the first two weeks of January '
-             'are displayed under the preceding fiscal year. 10-K numbers are not summed across multiple filings.')
-    if audit is not None and audit.issues:
-        st.dataframe(pd.DataFrame(audit_rows(audit)), hide_index=True, use_container_width=True)
-        st.caption('Flags identify anomalous or conflicting data; they do not establish that the company filed incorrect numbers. '
-                   'Flagged revenue observations are omitted from our ratios until resolved against the original 10-K.')
+    checked_count = len(audit.verified_years)
+    unverified_count = len(audit.unverified_years)
+    flagged_count = len(audit.hidden_years)
+    if flagged_count:
+        st.warning(f'**Discrepancy:** {flagged_count} fiscal year(s) flagged and omitted from revenue-based '
+                   'growth and profitability analysis: ' + ', '.join(f'FY{yr}' for yr in audit.hidden_years) + '.')
+    if checked_count:
+        st.success(f'**Cross-checked:** {checked_count} fiscal year(s) have matching-period SEC and Yahoo '
+                   'annual revenue values within 2.5%. This is a source comparison, NOT an independent audit.')
+    if unverified_count:
+        st.info(f'**Unverified:** {unverified_count} fiscal year(s) lack a usable comparison from a second source. '
+                'No automated red flag does NOT mean those years are verified.')
+    if not flagged_count and not checked_count and not unverified_count:
+        st.info('No revenue verification outcome available; inspect the report and original filings.')
+with st.expander('Data-quality report · year-by-year verification and sources'):
+    st.write('**What the labels mean:** Cross-checked = matching fiscal periods agree within 2.5% '
+             'between SEC and Yahoo; Discrepancy = conflicting or anomalous observation excluded '
+             'from revenue-based calculations; Unverified = independent comparison unavailable. '
+             'Cross-checking two feeds is not a financial-statement audit.')
+    st.write('**Fiscal years:** Periods ending January 1–15 use the preceding calendar year. '
+             'The report compares fiscal periods ending within 32 days, not just matching year labels.')
+    if audit is not None and audit.statuses:
+        st.dataframe(pd.DataFrame(audit.statuses), hide_index=True, use_container_width=True)
     else:
-        st.write('No automated revenue flags for the data currently retrieved.')
+        st.info('No annual revenue comparison records were returned for this stock.')
+    if audit is not None and audit.issues:
+        st.markdown('**Observations withheld pending review**')
+        st.dataframe(pd.DataFrame(audit_rows(audit)), hide_index=True, use_container_width=True)
+    else:
+        st.caption('No automated anomalies detected in the retrieved values. This does not mean '
+                   'every fiscal year has been verified.')
     sources = d.get('annual_sources') or {}
-    st.dataframe(pd.DataFrame([{'Metric':k.replace('_',' ').title(), 'Source':v}
-                               for k,v in sources.items()]), hide_index=True, use_container_width=True)
-    st.caption('Official SEC facts are preferred where available. Yahoo is used for market prices and a secondary '
-               'annual-revenue cross-check. Wikidata is public community reference metadata only, never valuation input.')
-    st.markdown('[Search company 10-K filings on SEC EDGAR](https://www.sec.gov/edgar/search/)')
+    if sources:
+        st.markdown('**Financial metric sources**')
+        st.dataframe(pd.DataFrame([{'Metric': k.replace('_',' ').title(), 'Source': src}
+                                   for k, src in sources.items()]), hide_index=True, use_container_width=True)
+    st.caption('Official SEC annual data are preferred when available. Yahoo is used for '
+               'stock prices and an optional annual-revenue cross-check; Wikidata metadata '
+               'is never used in valuations. A source can be accurate without a second feed.')
+    st.markdown('[Review company 10-K filings on SEC EDGAR](https://www.sec.gov/edgar/search/)')
 
 st.markdown('### 1 · Company lifecycle')
 if phase:
@@ -290,14 +311,11 @@ st.markdown('### 2 · Business performance')
 if not frame.empty:
     tab1, tab2, tab3 = st.tabs(['Revenue & cash flow', 'Profit trends', 'Annual figures'])
     with tab1:
-        fig=go.Figure()
-        x=frame['date'].apply(lambda d: f'FY{fiscal_year(d)}')
-        fig.add_trace(go.Scatter(x=x,y=frame.revenue/1e9,name='Revenue',mode='lines+markers',connectgaps=False,
-                                 line=dict(color='#9bdfc4',width=3)))
-        fig.add_trace(go.Scatter(x=x,y=frame.ocf/1e9,name='Operating cash flow',mode='lines+markers',
-                                 line=dict(color='#f4c77c',width=3)))
-        fig.update_yaxes(title_text='USD billions')
-        st.plotly_chart(chart_theme(fig),use_container_width=True)
+        fig = revenue_cash_flow_figure(frame)
+        st.plotly_chart(chart_theme(fig, 555), use_container_width=True)
+        st.caption('Two separate USD-billion scales: the upper panel shows revenue, '
+                   'and the lower panel shows operating cash flow. '
+                   'The heights of the two lines are not directly comparable.')
     with tab2:
         fig=go.Figure()
         fig.add_trace(go.Bar(x=x, y=frame.operating_income/1e9, name='Operating profit', marker_color='#9bdfc4'))
