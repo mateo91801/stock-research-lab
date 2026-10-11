@@ -109,7 +109,7 @@ def annual_frame(values):
         out[key] = align(values[key], dates) if dates else []
     return out
 
-st.markdown('<div class="sr-head">Independent research dashboard · v1.4.2</div>', unsafe_allow_html=True)
+st.markdown('<div class="sr-head">Independent research dashboard · v1.4.2.1</div>', unsafe_allow_html=True)
 st.markdown('<div class="sr-hero">Stock Research Lab <span style="color:#94dac2">↗</span></div>', unsafe_allow_html=True)
 st.markdown('<div class="sr-dim">Understand the business. Identify its lifecycle. Put today’s valuation in context.</div>', unsafe_allow_html=True)
 st.write('')
@@ -317,6 +317,9 @@ if not frame.empty:
                    'and the lower panel shows operating cash flow. '
                    'The heights of the two lines are not directly comparable.')
     with tab2:
+        # Keep the profit-trend fiscal-year labels defined inside this tab.
+        # v1.4.2 accidentally referenced an undefined `x` and stopped the app.
+        x = frame['date'].apply(lambda d: f'FY{fiscal_year(d)}')
         fig=go.Figure()
         fig.add_trace(go.Bar(x=x, y=frame.operating_income/1e9, name='Operating profit', marker_color='#9bdfc4'))
         fig.add_trace(go.Scatter(x=x,y=frame.net_income/1e9,name='Net income',
