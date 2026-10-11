@@ -11,6 +11,7 @@ from provider import fetch_stock, align
 from valuation_history import monthly_valuation, annual_asfiled_monthly_valuation, distribution_bands
 from growth_analysis import cagr, percent_margin, last_two
 from valuation_metrics import usable_history
+from data_quality import fiscal_year, audit_rows
 
 st.set_page_config(page_title="Stock Research Lab", page_icon="📈", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -98,13 +99,16 @@ def chart_theme(fig, height=335):
 
 def annual_frame(values):
     rev = values.get('revenue', pd.Series(dtype='float64'))
-    dates = list(rev.index.sort_values()) if not rev.empty else []
+    # Include all fiscal period ends, so quarantined revenue leaves a gap rather
+    # than disappearing and visually connecting unrelated years on line charts.
+    dates = sorted({pd.Timestamp(d) for field in ('revenue','operating_income','net_income','ocf','fcf','shares')
+                    for d in values.get(field, pd.Series(dtype='float64')).index})
     out = pd.DataFrame({'date': dates})
     for key in ['revenue','operating_income','net_income','ocf','fcf','shares']:
         out[key] = align(values[key], dates) if dates else []
     return out
 
-st.markdown('<div class="sr-head">Independent research dashboard · v1.4</div>', unsafe_allow_html=True)
+st.markdown('<div class="sr-head">Independent research dashboard · v1.4.1</div>', unsafe_allow_html=True)
 st.markdown('<div class="sr-hero">Stock Research Lab <span style="color:#94dac2">↗</span></div>', unsafe_allow_html=True)
 st.markdown('<div class="sr-dim">Understand the business. Identify its lifecycle. Put today’s valuation in context.</div>', unsafe_allow_html=True)
 st.write('')
@@ -178,15 +182,23 @@ with mc[3]: st.metric('Operating cash flow (FY)', format_billions(latest['ocf'])
 
 st.write('')
 st.markdown('### Business overview')
-st.caption('Company profile details are supplied by Yahoo Finance and may be incomplete or out of date.')
+st.caption('Business profile: Yahoo Finance, SEC business-address metadata, and optional Wikidata reference data. Sources may be incomplete or stale.')
 profile = d.get('profile') or {}
 col_b1, col_b2 = st.columns([1.7, 1])
 with col_b1:
     description = (profile.get('description') or '').strip()
+    wikidata_description = (profile.get('wikidata_description') or '').strip()
     if description:
         with st.container(border=True):
             st.markdown('**What this business does**')
             st.write(description)
+    elif wikidata_description:
+        with st.container(border=True):
+            st.markdown('**Community-maintained reference description**')
+            st.write(wikidata_description)
+            st.caption('From Wikidata (CC0); not SEC-verified. Check the business section of the latest 10-K.')
+            if profile.get('wikidata_url'):
+                st.markdown(f'[Wikidata record]({profile["wikidata_url"]})')
     else:
         st.info('A verified company description was not returned by the free profile provider. '
                 'The financial metrics below are still available.')
@@ -201,6 +213,9 @@ with col_b2:
         elif profile.get('sec_business_address'):
             st.write('**SEC-reported business address:** ' + profile['sec_business_address'])
             st.caption('This filing address is not independently verified as corporate headquarters.')
+        elif profile.get('wikidata_headquarters'):
+            st.write('**Possible HQ (Wikidata):** ' + profile['wikidata_headquarters'])
+            st.caption('Community-maintained; confirm with the company’s latest 10-K.')
         else:
             st.write('**Headquarters:** Not available')
         employees = profile.get('employees')
@@ -219,6 +234,33 @@ with st.expander('Revenue segments & customers — source coverage'):
     st.markdown('For a verified segment breakdown, check the company’s latest '
                 '[10-K annual filing on SEC EDGAR](https://www.sec.gov/edgar/search/), '
                 'especially the business and segment reporting notes.')
+
+st.markdown('### Data quality & source coverage')
+audit = d.get('quality_audit')
+if audit is not None:
+    flags = len(audit.hidden_years)
+    if flags:
+        st.warning(f'Annual revenue check: **{flags} fiscal year(s) flagged and withheld** from revenue growth and margin calculations: '
+                   + ', '.join(f'FY{y}' for y in audit.hidden_years) + '. See the data-quality report below.')
+    else:
+        st.success(f'Annual revenue checks found no isolated spikes or source discrepancies in {audit.checked_years} fiscal years. This is not a full filing audit.')
+else:
+    st.info('Revenue verification not available from the current sources. Check the original filings before investing.')
+with st.expander('Data-quality report · flagged years and source details'):
+    st.write('**Reporting period rules:** Fiscal years ending in the first two weeks of January '
+             'are displayed under the preceding fiscal year. 10-K numbers are not summed across multiple filings.')
+    if audit is not None and audit.issues:
+        st.dataframe(pd.DataFrame(audit_rows(audit)), hide_index=True, use_container_width=True)
+        st.caption('Flags identify anomalous or conflicting data; they do not establish that the company filed incorrect numbers. '
+                   'Flagged revenue observations are omitted from our ratios until resolved against the original 10-K.')
+    else:
+        st.write('No automated revenue flags for the data currently retrieved.')
+    sources = d.get('annual_sources') or {}
+    st.dataframe(pd.DataFrame([{'Metric':k.replace('_',' ').title(), 'Source':v}
+                               for k,v in sources.items()]), hide_index=True, use_container_width=True)
+    st.caption('Official SEC facts are preferred where available. Yahoo is used for market prices and a secondary '
+               'annual-revenue cross-check. Wikidata is public community reference metadata only, never valuation input.')
+    st.markdown('[Search company 10-K filings on SEC EDGAR](https://www.sec.gov/edgar/search/)')
 
 st.markdown('### 1 · Company lifecycle')
 if phase:
@@ -249,8 +291,8 @@ if not frame.empty:
     tab1, tab2, tab3 = st.tabs(['Revenue & cash flow', 'Profit trends', 'Annual figures'])
     with tab1:
         fig=go.Figure()
-        x=frame['date'].dt.strftime('%Y')
-        fig.add_trace(go.Scatter(x=x,y=frame.revenue/1e9,name='Revenue',mode='lines+markers',
+        x=frame['date'].apply(lambda d: f'FY{fiscal_year(d)}')
+        fig.add_trace(go.Scatter(x=x,y=frame.revenue/1e9,name='Revenue',mode='lines+markers',connectgaps=False,
                                  line=dict(color='#9bdfc4',width=3)))
         fig.add_trace(go.Scatter(x=x,y=frame.ocf/1e9,name='Operating cash flow',mode='lines+markers',
                                  line=dict(color='#f4c77c',width=3)))
@@ -313,7 +355,7 @@ else:
                        'capital-spending pair could be obtained. Missing capex is not zero.')
     st.markdown('#### Growth across fiscal years')
     fig_growth=go.Figure()
-    gdates=frame['date'].dt.strftime('%Y')
+    gdates=frame['date'].apply(lambda d: f'FY{fiscal_year(d)}')
     fig_growth.add_trace(go.Bar(x=gdates, y=frame.revenue/1e9, name='Revenue (USD billions)',
                                 marker_color='#98eacb'))
     fig_growth.update_yaxes(title_text='Annual revenue · USD billions')

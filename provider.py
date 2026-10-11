@@ -83,31 +83,42 @@ def fetch_stock(ticker: str, sec_user_agent: str = "") -> dict:
         if len(common):
             # Cash outflow may be negative in Yahoo; use absolute expenditure.
             values['fcf'] = (values['ocf'].loc[common] - values['capex'].loc[common].abs()).sort_index(ascending=False)
-    # Yahoo sometimes returns prices and quote metadata but empty annual financials.
-    # In that case use official SEC structured filings for US SEC registrants.
+    # Prefer authoritative SEC annual figures where supplied; Yahoo serves as a
+    # cross-check and fallback. Keep an explicit source per metric instead of
+    # silently intermixing years from the two feeds.
     source = 'Yahoo Finance (unofficial yfinance)'
     sec_status = ''
     valuation_facts = {}
     valuation_status = ''
-    # Filling missing fields from SEC is useful even when Yahoo has enough
-    # revenue/OCF to populate the older dashboard (e.g. missing FCF).
-    if any(values[key].empty for key in ('revenue','ocf','shares','fcf','net_income','operating_income')):
-        try:
-            from sec_fundamentals import load_financials
-            sec_values, company_from_sec = load_financials(ticker, sec_user_agent)
-            for name, sec_series in sec_values.items():
-                if name in values and values[name].empty and not sec_series.empty:
-                    # Only fill a MISSING complete series. Do not mingle Yahoo
-                    # and SEC numbers across overlapping years inside one field.
-                    values[name] = sec_series
-            if any(not series.empty for series in sec_values.values()):
-                source = 'SEC EDGAR and/or Yahoo Finance (annual financials) + Yahoo Finance (prices)'
-            else:
-                sec_status = 'SEC filing response did not contain an annual revenue tag for this stock.'
-            if not info.get('longName') and not info.get('shortName'):
-                info['shortName'] = company_from_sec
-        except Exception as exc:
-            sec_status = str(exc)
+    quality_audit = None
+    series_sources = {name: ('Yahoo Finance' if not series.empty else 'Unavailable')
+                      for name, series in values.items()}
+    yahoo_revenue = values['revenue'].copy()
+    try:
+        from sec_fundamentals import load_financials
+        from data_quality import audit_revenue
+        sec_values, company_from_sec = load_financials(ticker, sec_user_agent)
+        for name, sec_series in sec_values.items():
+            if name in values and not sec_series.empty:
+                # SEC is the source of record for fiscal-year annual data.
+                values[name] = sec_series
+                series_sources[name] = 'SEC EDGAR XBRL'
+        if not values['revenue'].empty:
+            quality_audit = audit_revenue(values['revenue'], yahoo_revenue,
+                source=series_sources.get('revenue','Yahoo Finance'))
+            values['revenue'] = quality_audit.accepted
+        if any(not series.empty for series in sec_values.values()):
+            source = 'SEC EDGAR (annual financials) + Yahoo Finance (prices; secondary cross-check)'
+        if not info.get('longName') and not info.get('shortName'):
+            info['shortName'] = company_from_sec
+    except Exception as exc:
+        sec_status = str(exc)
+        # When SEC is unavailable still check the Yahoo-only series for obvious
+        # isolated errors. Mark its different level of verification explicitly.
+        if not values['revenue'].empty:
+            from data_quality import audit_revenue
+            quality_audit = audit_revenue(values['revenue'], source='Yahoo Finance — not SEC verified')
+            values['revenue'] = quality_audit.accepted
     # Always attempt SEC quarterly data for the new monthly valuation, even
     # when Yahoo supplies the shorter annual income/cash-flow statements.
     try:
@@ -123,6 +134,14 @@ def fetch_stock(ticker: str, sec_user_agent: str = "") -> dict:
             sec_profile = load_sec_profile(ticker, sec_user_agent)
         except Exception:
             pass
+    # Optional public-domain Wikidata reference metadata, never financials.
+    extra_profile = {}
+    if not (info.get('longBusinessSummary') and info.get('city')):
+        try:
+            from reference_profile import wikidata_profile
+            extra_profile = wikidata_profile(ticker, info.get('longName') or info.get('shortName') or ticker)
+        except Exception:
+            pass
     price.index = pd.to_datetime(price.index)
     if price.index.tz is not None: price.index = price.index.tz_localize(None)
     price = price.sort_index()
@@ -133,6 +152,9 @@ def fetch_stock(ticker: str, sec_user_agent: str = "") -> dict:
             [info.get('city'), info.get('state'), info.get('country')] if x),
         'employees': info.get('fullTimeEmployees'),
         'sec_business_address': sec_profile.get('sec_business_address') or '',
+        'wikidata_description': extra_profile.get('description') or '',
+        'wikidata_headquarters': extra_profile.get('headquarters') or '',
+        'wikidata_url': extra_profile.get('source_url') or '',
     }
     return {'ticker':ticker, 'company':info.get('longName') or info.get('shortName') or ticker,
             'profile':profile,
@@ -141,4 +163,5 @@ def fetch_stock(ticker: str, sec_user_agent: str = "") -> dict:
             'values':values, 'prices':price, 'splits':splits, 'dividends_history':dividends,
             'price_latest':float(price.Close.dropna().iloc[-1]), 'price_asof':str(price.Close.dropna().index[-1].date()),
             'data_provider':source, 'sec_status':sec_status,
-            'valuation_facts':valuation_facts, 'valuation_status':valuation_status}
+            'valuation_facts':valuation_facts, 'valuation_status':valuation_status,
+            'quality_audit':quality_audit, 'annual_sources':series_sources}
