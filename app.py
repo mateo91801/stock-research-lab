@@ -8,6 +8,7 @@ import streamlit as st
 from analytics import (classify_phase, choose_profit_metric, format_billions,
                        yoy, annual_valuation, valuation_zones, STAGE_NAMES, STAGE_GUIDANCE)
 from provider import fetch_stock, align
+from valuation_history import monthly_valuation, distribution_bands
 
 st.set_page_config(page_title="Stock Research Lab", page_icon="📈", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -61,7 +62,7 @@ def annual_frame(values):
         out[key] = align(values[key], dates) if dates else []
     return out
 
-st.markdown('<div class="sr-head">Independent research dashboard · v1.0</div>', unsafe_allow_html=True)
+st.markdown('<div class="sr-head">Independent research dashboard · v1.2</div>', unsafe_allow_html=True)
 st.markdown('<div class="sr-hero">Stock Research Lab <span style="color:#94dac2">↗</span></div>', unsafe_allow_html=True)
 st.markdown('<div class="sr-dim">Understand the business. Identify its lifecycle. Put today’s valuation in context.</div>', unsafe_allow_html=True)
 st.write('')
@@ -188,42 +189,91 @@ else:
     st.info('Annual statements not available. For SEC-sourced annual data, configure SEC_USER_AGENT in your Streamlit app secrets with a real contact email. Some companies have limited standardized filings.')
 
 st.markdown('### 3 · Historical valuation')
-st.caption('Price / operating cash flow (P/OCF): how much investors paid for each $1 of annual operating cash flow.')
-# Annual share and OCF snapshots, not the continuous TTM P/OCF featured in Stock Simplifier.
-val=annual_valuation(d['prices'],v['ocf'],v['shares'],d['splits'])
-val=val[(val.multiple > 0) & (val.multiple < 250)] if not val.empty else val
-if len(val)>=3:
-    limits=valuation_zones(val['multiple'])
-    current=float(val.multiple.iloc[-1]); median=limits['median']
-    level='Historically expensive' if current>limits['upper'] else ('Historically attractive' if current<limits['lower'] else 'Mid-range')
-    top=st.columns(3)
-    top[0].metric('Latest annual P/OCF snapshot',f'{current:.1f}×')
-    top[1].metric('Historical median (available years)',f'{median:.1f}×')
-    top[2].metric('Historical range classification',level)
-    fig=go.Figure()
-    xmin=val.date.min()-pd.Timedelta(days=150)
-    xmax=val.date.max()+pd.Timedelta(days=150)
-    ceiling=max(max(val.multiple)*1.15, limits['upper']*1.4)
-    fig.add_hrect(y0=0,y1=limits['lower'], fillcolor='rgba(78,164,125,.23)',line_width=0,
-                  annotation_text='RELATIVELY CHEAP', annotation_position='bottom right')
-    fig.add_hrect(y0=limits['lower'],y1=limits['upper'], fillcolor='rgba(238,191,87,.19)',line_width=0,
-                  annotation_text='MID-RANGE', annotation_position='top right')
-    fig.add_hrect(y0=limits['upper'],y1=ceiling, fillcolor='rgba(208,95,111,.18)',line_width=0,
-                  annotation_text='RELATIVELY EXPENSIVE', annotation_position='top right')
-    fig.add_trace(go.Scatter(x=val.date, y=val.multiple, name='Annual P/OCF', mode='lines+markers',
-                             line=dict(color='#e6edf9',width=3),marker=dict(size=10)))
-    fig.add_hline(y=median,line_dash='dot',line_color='#e7bd66',
+st.caption('Monthly price / trailing 12-month operating cash flow (P/OCF), derived from SEC-filed quarterly statements and split-adjusted stock closing prices.\n\n'
+           '**Green / yellow / red are relative to this company’s own history, not fair-value estimates.**')
+
+period_col, foot_col = st.columns([1, 2], vertical_alignment='bottom')
+with period_col:
+    valuation_period = st.radio('Valuation history', ['5 years', '10 years'], horizontal=True,
+                                help='Compare monthly valuation observations within the chosen lookback.')
+lookback_years = 5 if valuation_period == '5 years' else 10
+with st.spinner('Building filed-date-aware valuation history...'):
+    monthly = monthly_valuation(d['prices'], d['splits'], d.get('valuation_facts') or {},
+                                years=lookback_years)
+bands = distribution_bands(monthly['multiple']) if not monthly.empty else None
+if bands:
+    last = monthly.iloc[-1]
+    current = float(last['multiple'])
+    median = bands['median']
+    relative = (current/median-1)*100 if median else 0
+    if current > bands['high']:
+        level = 'Expensive'
+    elif current < bands['low']:
+        level = 'Attractive'
+    else:
+        level = 'Mid-range'
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric('Latest monthly P/OCF', f'{current:.1f}×', help=f'Last price date: {last["date"]:%b %d, %Y}')
+    m2.metric(f'{lookback_years}Y historical median', f'{median:.1f}×')
+    m3.metric('Relative to median', f'{relative:+.1f}%')
+    m4.metric('Historical zone', level)
+    x0 = monthly.date.min() - pd.Timedelta(days=10)
+    x1 = monthly.date.max() + pd.Timedelta(days=10)
+    ceiling = max(1.14 * monthly.multiple.max(), 1.2 * bands['high'])
+    fig = go.Figure()
+    fig.add_hrect(y0=0, y1=bands['low'], fillcolor='rgba(75,166,116,.25)',
+                  line_width=0, annotation_text='HISTORICALLY ATTRACTIVE', annotation_position='bottom right')
+    fig.add_hrect(y0=bands['low'], y1=bands['high'], fillcolor='rgba(242,191,82,.18)',
+                  line_width=0, annotation_text='MID-RANGE', annotation_position='top right')
+    fig.add_hrect(y0=bands['high'], y1=ceiling, fillcolor='rgba(219,102,112,.19)',
+                  line_width=0, annotation_text='HISTORICALLY EXPENSIVE', annotation_position='top right')
+    fig.add_trace(go.Scatter(x=monthly.date, y=monthly.multiple, name='Filed-date-aware monthly P/OCF',
+                             mode='lines', line=dict(color='#e5edf8', width=2.5),
+                             hovertemplate='%{x|%b %Y}<br>P/OCF %{y:.1f}×<extra></extra>',
+                             connectgaps=False))
+    fig.add_hline(y=median, line_dash='dot', line_color='#e3c16f',
                   annotation_text=f'Median {median:.1f}×')
-    fig.update_yaxes(title_text='Annual price / operating cash flow',range=[0,ceiling])
-    fig.update_xaxes(range=[xmin,xmax])
-    st.plotly_chart(chart_theme(fig,370),use_container_width=True)
-    st.caption(f'**Important:** {len(val)} annual observations only. Bands use the 25th and 75th percentiles '
-               'of available observations—not intrinsic fair value. Annual fiscal-year-end price and '
-               'statement data are used; this is NOT a continuous 5-year trailing P/OCF chart and '
-               'it is NOT a historical backtest. Stock split adjustments are estimated.')
+    fig.update_yaxes(title_text='Price / TTM operating cash flow',range=[0,ceiling], ticksuffix='×')
+    fig.update_xaxes(range=[x0,x1])
+    st.plotly_chart(chart_theme(fig,405),use_container_width=True)
+    st.caption(f'**{len(monthly)} month-end observations** from {monthly.date.min():%b %Y}–{monthly.date.max():%b %Y}. '
+               f'Most recent cash-flow filing: {last["ocf_filed"]:%b %d, %Y} '
+               f'(period ended {last["ocf_period_end"]:%b %d, %Y}). '
+               'Bands are the 25th/75th percentiles of this selected window; a higher multiple means '
+               'investors are paying more per dollar of cash flow. Monthly points use the latest results '
+               'already filed with the SEC by that month-end—not later results.')
+    with st.expander('How this monthly valuation works — and its limitations'):
+        st.markdown('**Method:** Four consecutive fiscal-quarter operating cash flows are combined into '
+                    'trailing-12-month (TTM) cash flow. SEC 10-Q filings typically present year-to-date '
+                    'cash flows, so individual quarters are reconstructed by subtracting previous periods. '
+                    'Each month uses the last available daily closing price and the latest **already filed** '
+                    'TTM figures. Market capitalization is approximated using the latest filed diluted '
+                    'weighted-average share count, adjusted for subsequent splits.')
+        st.markdown('**Important:** Diluted weighted-average shares are not the exact daily outstanding '
+                    'share count. SEC filings may be late, incomplete, amended, or use incomparable tags. '
+                    'A gap in source data is not filled with invented numbers. '
+                    'This is a useful historical *relative-valuation* indicator, not an intrinsic '
+                    'fair-value estimate, recommendation to buy or sell, or a validated investment backtest. '
+                    'The valuation model is generally unsuitable for banks and some other financial firms.')
 else:
-    st.info('Not enough matched historical operating cash flow and outstanding-share figures '
-            'to produce an honest P/OCF valuation chart. No valuation zone is assigned.')
+    st.info('Not enough SEC-filed quarterly cash flow and share data for a dependable monthly P/OCF '
+            f'chart ({len(monthly)} available months; at least 24 needed). We will not invent '
+            'a continuous valuation history.')
+    if d.get('valuation_status'):
+        st.caption('SEC quarterly data note: ' + d['valuation_status'])
+    annual_val = annual_valuation(d['prices'], v['ocf'], v['shares'], d['splits'])
+    annual_val = annual_val[(annual_val.multiple>0) & (annual_val.multiple<250)] if not annual_val.empty else annual_val
+    if len(annual_val)>=3:
+        st.markdown('#### Available annual snapshots (fallback)')
+        limits = valuation_zones(annual_val['multiple'])
+        if limits:
+            fig = go.Figure(go.Scatter(x=annual_val.date, y=annual_val.multiple,
+                                       mode='lines+markers', name='Annual P/OCF',
+                                       line=dict(color='#9bdfc4',width=3)))
+            fig.update_yaxes(title_text='Annual P/OCF',ticksuffix='×')
+            st.plotly_chart(chart_theme(fig,315),use_container_width=True)
+            st.caption('Annual fiscal-year-end snapshots only—not monthly, not a historical backtest. '
+                       'FY-end values might not have been published on that date.')
 
 with st.expander('See the actual stock price chart (different from valuation!)'):
     period=st.select_slider('Price history',options=['1Y','3Y','5Y','10Y'],value='5Y')

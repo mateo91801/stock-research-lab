@@ -102,14 +102,20 @@ def extract_annual(facts: dict, tags: tuple, unit: str = 'USD') -> pd.Series:
     return pd.Series({d: entry[2] for d, entry in picked.items()}, dtype='float64').sort_index(ascending=False)
 
 
-def load_financials(ticker: str, user_agent: str) -> tuple[dict, str]:
-    """Return SEC financial series and SEC entity name. Raises a readable error."""
+@lru_cache(maxsize=3)
+def load_companyfacts(ticker: str, user_agent: str) -> dict:
+    """Fetch official structured SEC data; reused by annual and quarterly models."""
     if not valid_agent(user_agent):
         raise RuntimeError('Set SEC_USER_AGENT in Streamlit Secrets, including a contact email, to enable SEC financials.')
     cik = sec_cik(ticker, user_agent)
     if not cik:
         raise RuntimeError('No SEC CIK found for this ticker. SEC financial statements may not be available.')
-    raw = _download(f'https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json', user_agent)
+    return _download(f'https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json', user_agent)
+
+
+def load_financials(ticker: str, user_agent: str) -> tuple[dict, str]:
+    """Return SEC financial series and SEC entity name. Raises a readable error."""
+    raw = load_companyfacts(ticker, user_agent)
     facts = raw.get('facts', {})
     series = {}
     for name, tags in TAGS.items():

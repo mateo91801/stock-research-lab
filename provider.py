@@ -78,6 +78,8 @@ def fetch_stock(ticker: str, sec_user_agent: str = "") -> dict:
     # In that case use official SEC structured filings for US SEC registrants.
     source = 'Yahoo Finance (unofficial yfinance)'
     sec_status = ''
+    valuation_facts = {}
+    valuation_status = ''
     if values['revenue'].empty or values['ocf'].empty or values['shares'].empty:
         try:
             from sec_fundamentals import load_financials
@@ -95,6 +97,13 @@ def fetch_stock(ticker: str, sec_user_agent: str = "") -> dict:
                 info['shortName'] = company_from_sec
         except Exception as exc:
             sec_status = str(exc)
+    # Always attempt SEC quarterly data for the new monthly valuation, even
+    # when Yahoo supplies the shorter annual income/cash-flow statements.
+    try:
+        from sec_fundamentals import load_companyfacts
+        valuation_facts = load_companyfacts(ticker, sec_user_agent)
+    except Exception as exc:
+        valuation_status = str(exc)
     price.index = pd.to_datetime(price.index)
     if price.index.tz is not None: price.index = price.index.tz_localize(None)
     price = price.sort_index()
@@ -103,4 +112,5 @@ def fetch_stock(ticker: str, sec_user_agent: str = "") -> dict:
             'currency':info.get('currency') or 'USD', 'exchange':info.get('exchange') or '',
             'values':values, 'prices':price, 'splits':splits, 'dividends_history':dividends,
             'price_latest':float(price.Close.dropna().iloc[-1]), 'price_asof':str(price.Close.dropna().index[-1].date()),
-            'data_provider':source, 'sec_status':sec_status}
+            'data_provider':source, 'sec_status':sec_status,
+            'valuation_facts':valuation_facts, 'valuation_status':valuation_status}
