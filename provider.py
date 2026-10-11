@@ -63,6 +63,8 @@ def fetch_stock(ticker: str, sec_user_agent: str = "") -> dict:
     balance = safe(lambda: t.get_balance_sheet(freq='yearly'))
     dividends = safe(lambda: t.dividends)
     splits = safe(lambda: t.splits)
+    # Optional Yahoo earnings-calendar feed; may be empty or unavailable.
+    earnings_dates = safe(lambda: t.get_earnings_dates(limit=8))
     if not isinstance(splits, pd.Series): splits = pd.Series(dtype='float64')
     if not isinstance(dividends, pd.Series): dividends = pd.Series(dtype='float64')
 
@@ -142,6 +144,55 @@ def fetch_stock(ticker: str, sec_user_agent: str = "") -> dict:
             extra_profile = wikidata_profile(ticker, info.get('longName') or info.get('shortName') or ticker)
         except Exception:
             pass
+    # Management information is provider metadata; it is NOT an SEC-verified
+    # assessment of skill, founder status, or stock performance.
+    executive = None
+    officers = info.get('companyOfficers') or []
+    if isinstance(officers, list):
+        for person in officers:
+            if not isinstance(person, dict):
+                continue
+            title = str(person.get('title') or '').lower()
+            if 'chief executive officer' in title or title == 'ceo':
+                executive = {'name': str(person.get('name') or '')[:100],
+                             'title': str(person.get('title') or '')[:150]}
+                break
+    held = info.get('heldPercentInsiders')
+    try:
+        held = float(held)
+        if not 0 <= held <= 1: held = None
+    except (TypeError, ValueError):
+        held = None
+    surprises = []
+    if isinstance(earnings_dates, pd.DataFrame) and not earnings_dates.empty:
+        for date, earning in earnings_dates.sort_index(ascending=False).head(8).iterrows():
+            try:
+                reported = float(earning.get('Reported EPS'))
+                estimate = float(earning.get('EPS Estimate'))
+                if not pd.notna(reported) or not pd.notna(estimate): continue
+                surprises.append({'date':str(pd.Timestamp(date).date()),
+                                  'reported_eps':reported, 'estimate_eps':estimate,
+                                  'beat':reported > estimate, 'miss':reported < estimate})
+            except (TypeError, ValueError):
+                continue
+    # Balance-sheet amounts from a single dated Yahoo report. Do not use
+    # unidentified or unmatched debt / cash data to infer financial health.
+    debt_series = row_from(balance, ('Total Debt',))
+    cash_series = row_from(balance, ('Cash And Cash Equivalents',
+                                    'Cash Cash Equivalents And Short Term Investments',
+                                    'Cash And Short Term Investments'))
+    financial_position = {}
+    matched_dates = debt_series.index.intersection(cash_series.index)
+    if len(matched_dates):
+        bdate = max(matched_dates)
+        if pd.notna(debt_series.loc[bdate]) and pd.notna(cash_series.loc[bdate]):
+            financial_position = {'date': str(pd.Timestamp(bdate).date()),
+                                  'total_debt': float(debt_series.loc[bdate]),
+                                  'cash': float(cash_series.loc[bdate]),
+                                  'source': 'Yahoo Finance yearly balance sheet'}
+    management = {'ceo': executive, 'insider_fraction': held,
+                  'earnings_surprises': surprises,
+                  'source': 'Yahoo Finance company profile and earnings calendar (unofficial)'}
     price.index = pd.to_datetime(price.index)
     if price.index.tz is not None: price.index = price.index.tz_localize(None)
     price = price.sort_index()
@@ -157,7 +208,8 @@ def fetch_stock(ticker: str, sec_user_agent: str = "") -> dict:
         'wikidata_url': extra_profile.get('source_url') or '',
     }
     return {'ticker':ticker, 'company':info.get('longName') or info.get('shortName') or ticker,
-            'profile':profile,
+            'profile':profile, 'management': management,
+            'financial_position': financial_position,
             'sector':info.get('sector') or '', 'industry':info.get('industry') or '',
             'currency':info.get('currency') or 'USD', 'exchange':info.get('exchange') or '',
             'values':values, 'prices':price, 'splits':splits, 'dividends_history':dividends,

@@ -14,6 +14,7 @@ from valuation_metrics import usable_history
 from data_quality import fiscal_year, audit_rows
 from chart_helpers import revenue_cash_flow_figure
 from valuation_view import valuation_viewport, multiple_figure
+from investment_scorecard import analyze as evaluate_investment
 from research_explainer import (fiscal_yoy, headline_reading, growth_reading,
                                 margin_reading, valuation_reading,
                                 verification_reading, GLOSSARY)
@@ -74,6 +75,21 @@ st.markdown("""<style>
 [data-testid="stExpander"] details {background:#11213a!important;border:1px solid #4a6481!important}
 [data-testid="stInfo"] p {color:#f4f8ff!important}
 .sr-note-14{font-size:.92rem;line-height:1.6;color:#e2edff!important}
+/* v1.5 high contrast, compact scorecard */
+.sr-score-wrap{background:#13243c;border:1px solid #547096;border-radius:14px;padding:17px;margin:12px 0}
+.sr-score-row{display:grid;grid-template-columns:minmax(150px,1fr) auto 34px;gap:14px;align-items:center;padding:10px 0;border-bottom:1px solid #32445e}
+.sr-score-row:last-child{border-bottom:0}
+.sr-score-title{font-weight:700;color:#f2f7ff}
+.sr-score-note{font-size:12px;color:#d1e0f7;line-height:1.45}
+.sr-score-dots{display:flex;gap:4px}
+.sr-score-dot{height:11px;width:24px;min-width:12px;border-radius:4px;background:#344861}
+.sr-score-digit{text-align:right;font-weight:850;color:#fff;font-size:17px}
+.sr-verdict{border-radius:15px;padding:18px 21px;margin:15px 0;border:1px solid #587494;background:#1b2c47;color:#fff}
+.sr-verdict-label{font-size:31px;font-weight:900;letter-spacing:.08em;margin-bottom:5px}
+.sr-verdict-head{font-size:18px;font-weight:750;color:white}
+.sr-gauge{height:20px;border-radius:8px;position:relative;overflow:visible;background:linear-gradient(90deg,#277d66 0%,#277d66 35%,#957e4a 35%,#957e4a 65%,#8f4d63 65%,#8f4d63 100%);border:1px solid #a1b6ce;margin:14px 0 8px}
+.sr-gauge-pointer{position:absolute;top:-6px;height:30px;border-left:3px solid #fff;filter:drop-shadow(0px 0px 3px #101827)}
+@media(max-width:660px){.sr-score-row{grid-template-columns:minmax(130px,1fr) auto 20px;gap:6px}.sr-score-dot{width:11px;height:10px}}
 </style>""", unsafe_allow_html=True)
 
 @st.cache_data(ttl=60*60*3, show_spinner=False)
@@ -113,7 +129,7 @@ def annual_frame(values):
         out[key] = align(values[key], dates) if dates else []
     return out
 
-st.markdown('<div class="sr-head">Independent research dashboard · v1.4.4</div>', unsafe_allow_html=True)
+st.markdown('<div class="sr-head">Independent research dashboard · v1.5</div>', unsafe_allow_html=True)
 st.markdown('<div class="sr-hero">Stock Research Lab <span style="color:#94dac2">↗</span></div>', unsafe_allow_html=True)
 st.markdown('<div class="sr-dim">Understand the business. Identify its lifecycle. Put today’s valuation in context.</div>', unsafe_allow_html=True)
 st.write('')
@@ -420,6 +436,7 @@ else:
                     'and **FCF margin = reported free cash flow ÷ annual revenue**. '
                     'Free cash flow may be estimated as operating cash flow minus capital spending.')
 
+valuation_histories = {}
 st.markdown('### 3 · Historical P/OCF valuation')
 st.caption('Historical price-to-operating-cash-flow (P/OCF) using split-adjusted month-end stock prices.\n\n'
            '**Green / yellow / red compare the stock with its own history, not intrinsic fair value.**')
@@ -446,6 +463,7 @@ if bands is None:
         monthly, bands = annual_monthly, annual_bands
         valuation_method = 'filed_annual'
 if bands:
+    valuation_histories['pocf'] = {'history': monthly, 'method': valuation_method}
     if valuation_method == 'filed_annual':
         st.warning('**Monthly valuation — annual financial denominator.** SEC quarterly data ' 
                    'is insufficient for rolling TTM, so the monthly stock price is divided ' 
@@ -580,6 +598,7 @@ for metric, tab in [('pe',tab_pe), ('pfcf',tab_pfcf)]:
                 st.caption('Some companies disclose capital spending only in custom SEC XBRL tags; '
                            'those cases cannot be automatically reconstructed reliably here.')
         else:
+            valuation_histories[metric] = {'history': hist14, 'method': method14}
             if method14 == 'annual':
                 st.warning('**Annual filing fallback:** each month uses the most recently FILED '
                            '10-K figures, not true rolling-12-month financials.')
@@ -651,6 +670,131 @@ for metric, tab in [('pe',tab_pe), ('pfcf',tab_pfcf)]:
                             'year-to-date filings, and all financial numbers enter only after '
                             'their SEC filing dates. This is a **relative-history research tool**, '
                             'not intrinsic value or an investment recommendation.')
+
+# v1.5: Management snapshot — no inferred CEO tenure, founder status, or moat.
+st.markdown('### 5 · Management snapshot')
+st.caption('Optional Yahoo metadata may be delayed or incomplete. Leadership information and analyst '
+           'estimates are NOT sufficient to assign a management-skill rating.')
+management = d.get('management') or {}
+ceo = management.get('ceo') or {}
+insider_fraction = management.get('insider_fraction')
+mg1, mg2, mg3 = st.columns(3)
+mg1.metric('CEO (Yahoo)', ceo.get('name') or 'Not available')
+mg2.metric('CEO title', ceo.get('title') or 'Not available')
+mg3.metric('Insider ownership (Yahoo)',
+           f'{insider_fraction*100:.1f}%' if isinstance(insider_fraction, (int, float)) else 'Not available')
+results_eps = management.get('earnings_surprises') or []
+with st.expander('Earnings-per-share beats and misses · optional Yahoo feed', expanded=bool(results_eps)):
+    if results_eps:
+        beats = sum(1 for row in results_eps if row.get('beat'))
+        misses = sum(1 for row in results_eps if row.get('miss'))
+        inline = len(results_eps) - beats - misses
+        st.write(f'**{beats} beats · {misses} misses · {inline} in line** out of '
+                 f'{len(results_eps)} returned earnings dates with actual and estimated EPS.')
+        eps_table = pd.DataFrame(results_eps).rename(columns={
+            'date':'Earnings date', 'reported_eps':'Reported EPS',
+            'estimate_eps':'Estimated EPS', 'beat':'Beat', 'miss':'Miss'})
+        st.dataframe(eps_table, hide_index=True, use_container_width=True)
+        st.caption('EPS estimates are not revenue estimates. Different data providers may disagree.')
+    else:
+        st.info('No usable quarterly EPS surprises were returned; missing results are never counted as misses.')
+st.caption('Founder status, tenure, employee ratings, and a defensible moat rating require '
+           'additional, source-verified research and are intentionally left unscored.')
+
+st.markdown('### 6 · Automatic investment verdict')
+st.caption('An automatic evidence-based research screen, not personalized trading advice. '
+           'Valuation zones compare this stock with its own history, not with intrinsic fair value.')
+report = evaluate_investment(v, histories=valuation_histories,
+                             financial_position=d.get('financial_position'),
+                             quality_audit=d.get('quality_audit'),
+                             price_asof=d.get('price_asof'),
+                             sector=d.get('sector', ''), industry=d.get('industry', ''))
+verdict_color = {'BUY':'#9ce4ba', 'WATCH':'#f4d184', 'HOLD':'#bfd4ff',
+                 'PASS':'#d8dce8', 'SELL':'#ff9ba1'}.get(report.verdict, '#ffffff')
+st.markdown(f'''<div class="sr-verdict">
+<div class="sr-head">Lab V1.5 · Automatic five-way verdict</div>
+<div class="sr-verdict-label" style="color:{verdict_color}">{report.verdict}</div>
+<div class="sr-verdict-head">{html.escape(report.headline)}</div>
+<p style="color:#e3edff;line-height:1.65">{html.escape(report.explanation)}</p>
+</div>''', unsafe_allow_html=True)
+score_a, score_b, score_c = st.columns(3)
+score_a.metric('Business fundamentals (unweighted)',
+               f'{report.quality:.2f} / 5' if report.quality is not None else 'Not rated',
+               help='Average of available categories; NOT a validated stock-return prediction.')
+score_b.metric('Historical valuation score',
+               f'{report.valuation_rating} / 5' if report.valuation_rating is not None else 'Not rated',
+               help='Higher number means the multiple is in a lower part of its own observed history.')
+score_c.metric('Evidence coverage', report.confidence)
+st.markdown('#### How each category scored')
+ratings_html = ''
+for item in report.items:
+    rating = item.rating
+    dots = ''.join(
+        ('<span class="sr-score-dot" style="background:' +
+        ('#8ce6b9' if rating>=4 else '#edc87e' if rating==3 else '#f2a3a3') +
+        '"></span>') if rating is not None and index <= rating else '<span class="sr-score-dot"></span>'
+        for index in range(1,6))
+    ratings_html += (f'<div class="sr-score-row"><div><div class="sr-score-title">{html.escape(item.name)}</div>'
+                     f'<div class="sr-score-note">{html.escape(item.explanation)}</div></div>'
+                     f'<div class="sr-score-dots">{dots}</div>'
+                     f'<div class="sr-score-digit">{rating if rating is not None else "—"}</div></div>')
+st.markdown('<div class="sr-score-wrap">' + ratings_html + '</div>', unsafe_allow_html=True)
+if report.valuation_rating is not None:
+    st.markdown('**Valuation score explained**')
+    st.write(f'{report.valuation_lens}: **{report.valuation_multiple:.1f}×** versus a '
+             f'**{report.valuation_median:.1f}×** historical median. The current reading ranks '
+             f'around the **{report.valuation_percentile:.0f}th percentile** among '
+             f'{report.observations} monthly observations (through {report.valuation_date}). '
+             'A low percentile means a lower past multiple, not necessarily fair value.')
+    position = min(99., max(1., float(report.valuation_percentile)))
+    st.markdown(f'<div class="sr-gauge"><span class="sr-gauge-pointer" '
+                f'style="left:{position:.1f}%"></span></div>', unsafe_allow_html=True)
+    g1, g2, g3 = st.columns(3)
+    g1.caption('Lower historical multiple')
+    g2.caption('Mid-range')
+    g3.caption('Higher historical multiple')
+    if report.valuation_method in ('annual', 'filed_annual'):
+        st.caption('Valuation denominator: latest filed annual report, not rolling 12 months.')
+    else:
+        st.caption('Valuation denominator: SEC-filed trailing four quarters.')
+else:
+    st.info('Without a sufficiently complete and recent historical valuation series, '
+            'the Lab will not issue a positive buying signal.')
+if report.warnings:
+    with st.expander('Data gaps and screen limitations', expanded=True):
+        for msg in report.warnings: st.write('• ' + msg)
+with st.expander('Show the precise score and verdict rules'):
+    st.markdown('''**This is a rules-based research model, not a forecast or fair-value estimate.**
+
+Five fundamental metrics are rated from 1–5 using fixed heuristic thresholds:
+revenue growth (3-year CAGR), profitability (operating margin), cash generation
+(free-cash-flow margin and positive operating cash flow), annual earnings consistency,
+and balance-sheet health (net debt / annual operating cash flow). Available ratings
+receive equal weight. Missing figures are NOT treated as zero. Thresholds are
+not calibrated against industry peers.
+
+Valuation uses P/FCF first, then P/OCF, then P/E if necessary. Each history
+must have 24+ valid monthly observations and a latest point within 45 days of
+market prices. Valuation score 5 means the multiple is in the lowest 15% of
+observations; 4 is 15–35%; 3 is 35–65%; 2 is 65–85%; 1 is above 85%.
+
+Verdicts are applied in this priority:
+- **PASS (insufficient evidence):** under three fundamentals, missing revenue or
+  cash score, no eligible valuation, stale financials, or unsuitable financial-sector business.
+- **SELL:** quality ≤2, valuation ≤2, and profitability and cash generation each ≤2.
+- **BUY:** quality ≥4 and valuation ≥4; profit and cash scores ≥3;
+  earnings and leverage (if scored) ≥3; no flagged revenue observations.
+- **WATCH:** quality ≥3.5 without clearing BUY.
+- **HOLD:** quality ≥3 and valuation ≥3, without clearing the above.
+- **PASS:** all other situations.
+
+**SELL** is a risk flag for someone already holding the stock; **HOLD** is
+conditional on an existing position. The Lab does not know your holdings.
+The framework omits management skill, competitive moat, peer comparisons, forward
+forecasts, taxes, and your investment situation. The historical data may be stale
+or misleading, and neither these ratings nor their weights have been backtested.''')
+    for item in report.items:
+        st.write(f'**{item.name}:** {item.evidence}')
 
 with st.expander('Plain-English glossary · financial terms and abbreviations'):
     st.caption('Definitions for interpreting the Lab. The same metric can be more or less useful '
