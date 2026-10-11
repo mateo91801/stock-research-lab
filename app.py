@@ -13,6 +13,7 @@ from growth_analysis import cagr, percent_margin, last_two
 from valuation_metrics import usable_history
 from data_quality import fiscal_year, audit_rows
 from chart_helpers import revenue_cash_flow_figure
+from valuation_view import valuation_viewport, multiple_figure
 
 st.set_page_config(page_title="Stock Research Lab", page_icon="📈", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -109,7 +110,7 @@ def annual_frame(values):
         out[key] = align(values[key], dates) if dates else []
     return out
 
-st.markdown('<div class="sr-head">Independent research dashboard · v1.4.2.1</div>', unsafe_allow_html=True)
+st.markdown('<div class="sr-head">Independent research dashboard · v1.4.3</div>', unsafe_allow_html=True)
 st.markdown('<div class="sr-hero">Stock Research Lab <span style="color:#94dac2">↗</span></div>', unsafe_allow_html=True)
 st.markdown('<div class="sr-dim">Understand the business. Identify its lifecycle. Put today’s valuation in context.</div>', unsafe_allow_html=True)
 st.write('')
@@ -560,20 +561,37 @@ for metric, tab in [('pe',tab_pe), ('pfcf',tab_pfcf)]:
             v1.metric(f'Latest {metric_label}', f'{current14:.1f}×')
             v2.metric('Historical median', f'{median14:.1f}×')
             v3.metric('Relative valuation zone', zone14)
-            high14=max(1.2*limits14['high'],1.15*hist14.multiple.max())
-            graph14=go.Figure()
-            graph14.add_hrect(y0=0,y1=limits14['low'],fillcolor='rgba(74,171,112,.26)',line_width=0)
-            graph14.add_hrect(y0=limits14['low'],y1=limits14['high'],fillcolor='rgba(241,190,90,.22)',line_width=0)
-            graph14.add_hrect(y0=limits14['high'],y1=high14,fillcolor='rgba(225,91,112,.22)',line_width=0)
-            graph14.add_trace(go.Scatter(x=hist14.date,y=hist14.multiple,mode='lines',
-                                         name=f'{metric_label} ({method14})',
-                                         line=dict(color='#f5fbff',width=2.7),
-                                         hovertemplate=f'%{{x|%b %Y}}<br>{metric_label}: %{{y:.1f}}×<extra></extra>'))
-            graph14.add_hline(y=median14,line_dash='dot',line_color='#f5d77e',
-                              annotation_text=f'Median {median14:.1f}×')
-            graph14.update_yaxes(title_text=metric_label,range=[0,high14],ticksuffix='×')
+            # v1.4.3: a presentation-only zoom for unusually high P/E or P/FCF
+            # readings. The underlying historical series and percentile bands are
+            # unchanged; missing or extreme data are NEVER silently replaced.
+            viewport14 = valuation_viewport(hist14['multiple'],
+                                             limits14['low'], limits14['high'], median14)
+            focused14 = False
+            if viewport14.has_outlier_focus:
+                display_mode14 = st.radio(
+                    f'{metric_label} chart view',
+                    ['Readable view (high outliers marked)', 'Full range (all values)'],
+                    horizontal=True,
+                    key=f'valuation_chart_view_{metric}',
+                    help='Only the y-axis presentation changes. Every SEC-derived value '
+                         'is retained for the median, shaded bands, and metrics.')
+                focused14 = display_mode14.startswith('Readable')
+            display_top14 = (viewport14.focused_ceiling if focused14 else
+                             viewport14.full_ceiling)
+            graph14, above_range14 = multiple_figure(
+                hist14, metric_label, method14, limits14, display_top14, focused14)
             st.plotly_chart(chart_theme(graph14,350),use_container_width=True,
                             key=f'additional_valuation_{metric}')
+            if above_range14:
+                st.caption(
+                    f'**Readable view:** {above_range14} of {viewport14.total_count} '
+                    f'observations exceed the visible {display_top14:.1f}× ceiling. '
+                    'Gold ▲ markers show where the hidden high values occur; hover '
+                    'over each marker for its actual value, or choose **Full range**. '
+                    'The median, bands and valuation classification use ALL observations.')
+            elif viewport14.has_outlier_focus:
+                st.caption('Full range selected — all observations are displayed, '
+                           'including rare spikes potentially caused by very low earnings or cash flow.')
             st.caption(f'{len(hist14)} monthly observations '
                        f'({hist14.date.min():%b %Y}–{hist14.date.max():%b %Y}); '
                        f'most recent earnings/cash-flow filing {hist14.iloc[-1]["denom_filed"]:%b %d, %Y}. '
