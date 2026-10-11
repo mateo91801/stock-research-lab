@@ -207,3 +207,84 @@ def distribution_bands(series: pd.Series, min_points=24) -> Optional[dict]:
         return None
     return {'low': float(clean.quantile(.25)), 'median': float(clean.median()),
             'high': float(clean.quantile(.75)), 'observations': len(clean)}
+
+
+def as_filed_annual_events(companyfacts: dict, tags: tuple[str, ...],
+                           unit: str, now: pd.Timestamp | None = None) -> list[FinancialPoint]:
+    """Earliest original 10-K annual disclosures for each FY end.
+
+    Companyfacts includes *later comparative facts* for earlier reporting years.
+    For historical research these must not replace the figures known back then.
+    """
+    cutoff = (pd.Timestamp(now).normalize() if now is not None
+              else pd.Timestamp.today().normalize())
+    group = companyfacts.get('facts', {}).get('us-gaap', {})
+    selected = {}
+    for priority, tag in enumerate(tags):
+        for raw in group.get(tag, {}).get('units', {}).get(unit, []):
+            if raw.get('form') != '10-K':
+                continue
+            try:
+                start = pd.Timestamp(raw['start']).normalize()
+                end = pd.Timestamp(raw['end']).normalize()
+                filed = pd.Timestamp(raw['filed']).normalize()
+                value = float(raw['val'])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            days = (end - start).days
+            if (not 325 <= days <= 402 or end > cutoff or filed > cutoff
+                    or filed < end or (filed - end).days > 180
+                    or not np.isfinite(value) or value <= 0):
+                continue
+            # Prefer primary tagged annual figure; if multiple filings use
+            # first as-filed release, not hindsight revisions.
+            order = (priority, filed)
+            if end not in selected or order < selected[end][0]:
+                selected[end] = (order, FinancialPoint(end, filed, value, tag))
+    return sorted((item[1] for item in selected.values()), key=lambda r: r.end)
+
+
+def annual_asfiled_monthly_valuation(prices: pd.DataFrame, splits: pd.Series,
+                                      companyfacts: dict, years: int = 5,
+                                      now: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Monthly price divided by last PUBLICLY FILED annual operating cash flow.
+
+    Fallback only: denominator is a fixed FY number between 10-K publications,
+    not trailing-four-quarter cash flow. Prevents future FY hindsight leakage.
+    """
+    close = _close_series(prices)
+    cols = ['date', 'multiple', 'price', 'ocf_annual', 'shares',
+            'ocf_period_end', 'ocf_filed', 'shares_filed']
+    if close.empty:
+        return pd.DataFrame(columns=cols)
+    asof = (min(pd.Timestamp(now).normalize(), close.index.max()) if now is not None
+            else close.index.max())
+    cash = as_filed_annual_events(companyfacts, OCF_TAGS, 'USD', asof)
+    shares = as_filed_annual_events(companyfacts, SHARES_TAGS, 'shares', asof)
+    share_by_end = {item.end: item for item in shares}
+    # Require same FY for cash flow and annual share denominator: no mixing
+    # between companies' or eras' different reporting periods.
+    paired = [(event, share_by_end[event.end]) for event in cash if event.end in share_by_end]
+    if not paired:
+        return pd.DataFrame(columns=cols)
+    monthly_close = close.groupby(close.index.to_period('M')).tail(1)
+    monthly_close = monthly_close[monthly_close.index >= asof - pd.DateOffset(years=years)]
+    rows = []
+    for day, price in monthly_close.items():
+        eligible = [(cashp, sharep) for cashp, sharep in paired
+                    if cashp.filed <= day and sharep.filed <= day]
+        if not eligible:
+            continue
+        cashp, sharep = max(eligible, key=lambda pair: pair[0].end)
+        # An annual report should cease to be a useful valuation basis if
+        # more than ~16 months have passed since its FY end.
+        if (day - cashp.end).days > 485:
+            continue
+        adjusted_shares = sharep.value * _share_split_multiplier(sharep.end, splits, asof)
+        multiple = float(price) * adjusted_shares / cashp.value
+        if np.isfinite(multiple) and 0 < multiple < 500:
+            rows.append(dict(date=day, multiple=multiple, price=float(price),
+                             ocf_annual=cashp.value, shares=adjusted_shares,
+                             ocf_period_end=cashp.end, ocf_filed=cashp.filed,
+                             shares_filed=sharep.filed))
+    return pd.DataFrame(rows, columns=cols)

@@ -8,7 +8,7 @@ import streamlit as st
 from analytics import (classify_phase, choose_profit_metric, format_billions,
                        yoy, annual_valuation, valuation_zones, STAGE_NAMES, STAGE_GUIDANCE)
 from provider import fetch_stock, align
-from valuation_history import monthly_valuation, distribution_bands
+from valuation_history import monthly_valuation, annual_asfiled_monthly_valuation, distribution_bands
 
 st.set_page_config(page_title="Stock Research Lab", page_icon="📈", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -62,7 +62,7 @@ def annual_frame(values):
         out[key] = align(values[key], dates) if dates else []
     return out
 
-st.markdown('<div class="sr-head">Independent research dashboard · v1.2</div>', unsafe_allow_html=True)
+st.markdown('<div class="sr-head">Independent research dashboard · v1.2.1</div>', unsafe_allow_html=True)
 st.markdown('<div class="sr-hero">Stock Research Lab <span style="color:#94dac2">↗</span></div>', unsafe_allow_html=True)
 st.markdown('<div class="sr-dim">Understand the business. Identify its lifecycle. Put today’s valuation in context.</div>', unsafe_allow_html=True)
 st.write('')
@@ -189,8 +189,8 @@ else:
     st.info('Annual statements not available. For SEC-sourced annual data, configure SEC_USER_AGENT in your Streamlit app secrets with a real contact email. Some companies have limited standardized filings.')
 
 st.markdown('### 3 · Historical valuation')
-st.caption('Monthly price / trailing 12-month operating cash flow (P/OCF), derived from SEC-filed quarterly statements and split-adjusted stock closing prices.\n\n'
-           '**Green / yellow / red are relative to this company’s own history, not fair-value estimates.**')
+st.caption('Historical price-to-operating-cash-flow (P/OCF) using split-adjusted month-end stock prices.\n\n'
+           '**Green / yellow / red compare the stock with its own history, not intrinsic fair value.**')
 
 period_col, foot_col = st.columns([1, 2], vertical_alignment='bottom')
 with period_col:
@@ -201,7 +201,28 @@ with st.spinner('Building filed-date-aware valuation history...'):
     monthly = monthly_valuation(d['prices'], d['splits'], d.get('valuation_facts') or {},
                                 years=lookback_years)
 bands = distribution_bands(monthly['multiple']) if not monthly.empty else None
+valuation_method = 'ttm'
+if bands is None:
+    # Quarterly SEC histories differ widely by issuer. When the quarterly model
+    # lacks coverage, provide an explicitly labeled annual-as-filed monthly
+    # chart rather than a false rolling TTM estimate or invented observations.
+    annual_monthly = annual_asfiled_monthly_valuation(
+        d['prices'], d['splits'], d.get('valuation_facts') or {},
+        years=lookback_years)
+    annual_bands = distribution_bands(annual_monthly['multiple']) if not annual_monthly.empty else None
+    if annual_bands:
+        monthly, bands = annual_monthly, annual_bands
+        valuation_method = 'filed_annual'
 if bands:
+    if valuation_method == 'filed_annual':
+        st.warning('**Monthly valuation — annual financial denominator.** SEC quarterly data ' 
+                   'is insufficient for rolling TTM, so the monthly stock price is divided ' 
+                   'by the most recently **filed fiscal-year** operating cash flow. The ' 
+                   'denominator updates only after each 10-K filing. This is NOT a ' 
+                   'trailing-12-month valuation series.')
+    else:
+        st.success('**Monthly valuation — rolling TTM operating cash flow.** '
+                   'Cash flow updates when the underlying quarterly SEC filings become public.')
     last = monthly.iloc[-1]
     current = float(last['multiple'])
     median = bands['median']
@@ -213,7 +234,7 @@ if bands:
     else:
         level = 'Mid-range'
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric('Latest monthly P/OCF', f'{current:.1f}×', help=f'Last price date: {last["date"]:%b %d, %Y}')
+    m1.metric('Latest monthly P/OCF', f'{current:.1f}×', help=f'Last price date: {last["date"]:%b %d, %Y}; method: {valuation_method}')
     m2.metric(f'{lookback_years}Y historical median', f'{median:.1f}×')
     m3.metric('Relative to median', f'{relative:+.1f}%')
     m4.metric('Historical zone', level)
@@ -227,28 +248,37 @@ if bands:
                   line_width=0, annotation_text='MID-RANGE', annotation_position='top right')
     fig.add_hrect(y0=bands['high'], y1=ceiling, fillcolor='rgba(219,102,112,.19)',
                   line_width=0, annotation_text='HISTORICALLY EXPENSIVE', annotation_position='top right')
-    fig.add_trace(go.Scatter(x=monthly.date, y=monthly.multiple, name='Filed-date-aware monthly P/OCF',
+    fig.add_trace(go.Scatter(x=monthly.date, y=monthly.multiple, name=('Trailing TTM P/OCF' if valuation_method == 'ttm' else 'Last filed FY P/OCF (not TTM)'),
                              mode='lines', line=dict(color='#e5edf8', width=2.5),
                              hovertemplate='%{x|%b %Y}<br>P/OCF %{y:.1f}×<extra></extra>',
                              connectgaps=False))
     fig.add_hline(y=median, line_dash='dot', line_color='#e3c16f',
                   annotation_text=f'Median {median:.1f}×')
-    fig.update_yaxes(title_text='Price / TTM operating cash flow',range=[0,ceiling], ticksuffix='×')
+    fig.update_yaxes(title_text=('Price / trailing 12-mo OCF' if valuation_method == 'ttm' else 'Price / last filed fiscal-year OCF'), range=[0,ceiling], ticksuffix='×')
     fig.update_xaxes(range=[x0,x1])
     st.plotly_chart(chart_theme(fig,405),use_container_width=True)
     st.caption(f'**{len(monthly)} month-end observations** from {monthly.date.min():%b %Y}–{monthly.date.max():%b %Y}. '
                f'Most recent cash-flow filing: {last["ocf_filed"]:%b %d, %Y} '
                f'(period ended {last["ocf_period_end"]:%b %d, %Y}). '
-               'Bands are the 25th/75th percentiles of this selected window; a higher multiple means '
-               'investors are paying more per dollar of cash flow. Monthly points use the latest results '
-               'already filed with the SEC by that month-end—not later results.')
+               'Bands are the 25th/75th percentiles of this selected window. '
+               + ('Denominator is most recently SEC-filed ANNUAL operating cash flow (not TTM); '
+                  'it changes after a 10-K, not every quarter. ' if valuation_method == 'filed_annual' else
+                  'Denominator is SEC-filed trailing 4-quarter operating cash flow. ')
+               + 'No data enters the calculation before its SEC filing date.')
     with st.expander('How this monthly valuation works — and its limitations'):
-        st.markdown('**Method:** Four consecutive fiscal-quarter operating cash flows are combined into '
-                    'trailing-12-month (TTM) cash flow. SEC 10-Q filings typically present year-to-date '
-                    'cash flows, so individual quarters are reconstructed by subtracting previous periods. '
-                    'Each month uses the last available daily closing price and the latest **already filed** '
-                    'TTM figures. Market capitalization is approximated using the latest filed diluted '
-                    'weighted-average share count, adjusted for subsequent splits.')
+        if valuation_method == 'ttm':
+            st.markdown('**Method: trailing 12-month.** Four consecutive fiscal-quarter cash flows '
+                        'are combined into TTM cash flow. SEC 10-Q filings usually present '
+                        'year-to-date cash flows, so quarters are derived by subtraction.')
+        else:
+            st.markdown('**Method: last disclosed fiscal-year cash flow (fallback).** '
+                        'The closing stock price at each month-end is divided by operating '
+                        'cash flow from the most recent 10-K *already filed as of that month*. '
+                        'Thus cash flow only updates once per annual filing. This is *not* '
+                        'trailing-12-month cash flow and should not be treated as equivalent.')
+        st.markdown('Market capitalization is approximated with SEC-filed diluted '
+                    'weighted-average shares aligned to the cash-flow period and adjusted '
+                    'for subsequent stock splits. Shares are not exact daily share counts.')
         st.markdown('**Important:** Diluted weighted-average shares are not the exact daily outstanding '
                     'share count. SEC filings may be late, incomplete, amended, or use incomparable tags. '
                     'A gap in source data is not filled with invented numbers. '
@@ -261,6 +291,15 @@ else:
             'a continuous valuation history.')
     if d.get('valuation_status'):
         st.caption('SEC quarterly data note: ' + d['valuation_status'])
+    if d.get('valuation_facts'):
+        with st.expander('Data coverage diagnostics (no private settings shown)'):
+            from valuation_history import trailing_cashflows, share_events, as_filed_annual_events, OCF_TAGS, SHARES_TAGS
+            facts = d['valuation_facts']
+            st.caption(f'Quarterly TTM cash-flow events: {len(trailing_cashflows(facts))}; '
+                       f'quarterly share events: {len(share_events(facts))}; '
+                       f'annual operating cash-flow events: {len(as_filed_annual_events(facts, OCF_TAGS, "USD"))}; '
+                       f'annual share events: {len(as_filed_annual_events(facts, SHARES_TAGS, "shares"))}. '
+                       'If both monthly methods are unavailable, these counts help identify the missing filing data.')
     annual_val = annual_valuation(d['prices'], v['ocf'], v['shares'], d['splits'])
     annual_val = annual_val[(annual_val.multiple>0) & (annual_val.multiple<250)] if not annual_val.empty else annual_val
     if len(annual_val)>=3:
