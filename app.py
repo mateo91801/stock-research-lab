@@ -10,6 +10,7 @@ from analytics import (classify_phase, choose_profit_metric, format_billions,
 from provider import fetch_stock, align
 from valuation_history import monthly_valuation, annual_asfiled_monthly_valuation, distribution_bands
 from growth_analysis import cagr, percent_margin, last_two
+from valuation_metrics import usable_history
 
 st.set_page_config(page_title="Stock Research Lab", page_icon="📈", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -32,7 +33,7 @@ st.markdown("""<style>
 .phase-track{display:flex;gap:5px;flex-wrap:wrap;margin:15px 0 7px}
 .phase-stop{flex:1;min-width:105px;padding:15px 8px;border-radius:11px;text-align:center;background:#182337;border:1px solid #2a364b;color:#9daec8;font-weight:650;font-size:12px}
 .phase-current{background:#173e37;border-color:#81d9b7;color:white;box-shadow:inset 0 0 0 1px #81d9b7}
-/* Version 1.3 readability refresh — higher text contrast at every level */
+/* Version 1.4 readability refresh — higher text contrast at every level */
 .stApp {background:#0b1020!important;color:#f5f8ff!important}
 .stApp, .stApp p, .stApp li, .stApp label,
 [data-testid="stMarkdownContainer"], [data-testid="stCaptionContainer"],
@@ -62,6 +63,11 @@ st.markdown("""<style>
 .sr-info p{color:#f0f6ff!important;margin:.35rem 0}
 .sr-statline{display:flex;flex-wrap:wrap;gap:18px;padding:10px 0;font-size:15px;font-weight:600;color:#eef6ff}
 .sr-loud{color:#ffffff!important;font-weight:800}
+/* v1.4: ensure Plotly hover and supplementary text remain legible */
+[data-testid="stMetric"] {background:#17253e!important;border:1px solid #506886!important}
+[data-testid="stExpander"] details {background:#11213a!important;border:1px solid #4a6481!important}
+[data-testid="stInfo"] p {color:#f4f8ff!important}
+.sr-note-14{font-size:.92rem;line-height:1.6;color:#e2edff!important}
 </style>""", unsafe_allow_html=True)
 
 @st.cache_data(ttl=60*60*3, show_spinner=False)
@@ -98,7 +104,7 @@ def annual_frame(values):
         out[key] = align(values[key], dates) if dates else []
     return out
 
-st.markdown('<div class="sr-head">Independent research dashboard · v1.3</div>', unsafe_allow_html=True)
+st.markdown('<div class="sr-head">Independent research dashboard · v1.4</div>', unsafe_allow_html=True)
 st.markdown('<div class="sr-hero">Stock Research Lab <span style="color:#94dac2">↗</span></div>', unsafe_allow_html=True)
 st.markdown('<div class="sr-dim">Understand the business. Identify its lifecycle. Put today’s valuation in context.</div>', unsafe_allow_html=True)
 st.write('')
@@ -189,7 +195,14 @@ with col_b2:
         st.markdown('**Company at a glance**')
         st.write('**Sector:** ' + (d.get('sector') or 'Not available'))
         st.write('**Industry:** ' + (d.get('industry') or 'Not available'))
-        st.write('**Headquarters:** ' + (profile.get('headquarters') or 'Not available'))
+        hq = profile.get('headquarters') or ''
+        if hq:
+            st.write('**Headquarters (Yahoo):** ' + hq)
+        elif profile.get('sec_business_address'):
+            st.write('**SEC-reported business address:** ' + profile['sec_business_address'])
+            st.caption('This filing address is not independently verified as corporate headquarters.')
+        else:
+            st.write('**Headquarters:** Not available')
         employees = profile.get('employees')
         st.write('**Employees (reported):** ' + (f'{int(employees):,}' if isinstance(employees, (int, float)) and pd.notna(employees) and employees >= 0 else 'Not available'))
         website = (profile.get('website') or '').strip()
@@ -201,6 +214,8 @@ with st.expander('Revenue segments & customers — source coverage'):
              'We do not estimate segment percentages without a supporting filing.')
     st.write('**Customers:** The business description above may mention customer types, '
              'but we do not automatically infer or rank them.')
+    st.caption('Company summaries and employee counts are provider-dependent. '
+               'SEC addresses are sourced separately and may differ from headquarters.')
     st.markdown('For a verified segment breakdown, check the company’s latest '
                 '[10-K annual filing on SEC EDGAR](https://www.sec.gov/edgar/search/), '
                 'especially the business and segment reporting notes.')
@@ -286,6 +301,16 @@ else:
         for target,label,value in zip([c1,c2,c3],
                         ['Operating margin','Net income margin','Free cash flow margin'],margins):
             target.metric(label, f'{value:+.1f}%' if value is not None else 'N/A')
+    if latest is not None:
+        annual_fcf = latest.get('fcf')
+        if annual_fcf is not None and pd.notna(annual_fcf):
+            st.caption(f'Latest reported/derived fiscal-year free cash flow: '
+                       f'**{format_billions(annual_fcf)}**. Method: operating cash flow '
+                       'minus reported capital expenditures, or a provider-reported FCF figure.')
+        else:
+            st.caption('Free cash flow is unavailable because neither a trustworthy '
+                       'reported FCF figure nor a matching operating cash flow and '
+                       'capital-spending pair could be obtained. Missing capex is not zero.')
     st.markdown('#### Growth across fiscal years')
     fig_growth=go.Figure()
     gdates=frame['date'].dt.strftime('%Y')
@@ -302,7 +327,7 @@ else:
                     'and **FCF margin = reported free cash flow ÷ annual revenue**. '
                     'Free cash flow may be estimated as operating cash flow minus capital spending.')
 
-st.markdown('### 3 · Historical valuation')
+st.markdown('### 3 · Historical P/OCF valuation')
 st.caption('Historical price-to-operating-cash-flow (P/OCF) using split-adjusted month-end stock prices.\n\n'
            '**Green / yellow / red compare the stock with its own history, not intrinsic fair value.**')
 
@@ -427,6 +452,80 @@ else:
             st.plotly_chart(chart_theme(fig,315),use_container_width=True)
             st.caption('Annual fiscal-year-end snapshots only—not monthly, not a historical backtest. '
                        'FY-end values might not have been published on that date.')
+
+# Two new, independently sourced valuation lenses. Existing P/OCF retained intact.
+st.markdown('### 4 · Additional valuation lenses')
+st.caption('P/E and P/FCF use SEC-reported financials and historical month-end prices. '
+           'Like the P/OCF chart, the shaded bands reflect **historical relative multiples, '
+           'not a calculated fair price**. Negative earnings or FCF are not assigned a multiple.')
+tab_pe, tab_pfcf = st.tabs(['Price / earnings (P/E)', 'Price / free cash flow (P/FCF)'])
+for metric, tab in [('pe',tab_pe), ('pfcf',tab_pfcf)]:
+    with tab:
+        metric_label = 'P/E' if metric == 'pe' else 'P/FCF'
+        if metric == 'pfcf':
+            st.caption('Free cash flow = SEC operating cash flow minus SEC-reported '
+                       'payments for property, plant & equipment or productive assets. '
+                       'Missing capex is never treated as zero.')
+        else:
+            st.caption('P/E is estimated as market capitalization divided by '
+                       'SEC-reported net income, with diluted weighted-average shares. '
+                       'This is an approximation, not exact point-in-time EPS.')
+        with st.spinner(f'Calculating {metric_label} valuation history...'):
+            hist14, method14 = usable_history(d['prices'], d['splits'],
+                                             d.get('valuation_facts') or {},
+                                             metric, years=lookback_years)
+        limits14 = distribution_bands(hist14['multiple']) if not hist14.empty else None
+        if limits14 is None:
+            st.info(f'Insufficient filed financial and share-count data for a dependable {metric_label} '
+                    f'history: {len(hist14)} month-end observations (24 required). '
+                    'This metric will stay unavailable instead of showing a made-up valuation.')
+            if metric == 'pfcf':
+                st.caption('Some companies disclose capital spending only in custom SEC XBRL tags; '
+                           'those cases cannot be automatically reconstructed reliably here.')
+        else:
+            if method14 == 'annual':
+                st.warning('**Annual filing fallback:** each month uses the most recently FILED '
+                           '10-K figures, not true rolling-12-month financials.')
+            else:
+                st.success('**SEC quarterly TTM:** values update after the underlying '
+                           'quarterly or annual filing is public.')
+            current14 = float(hist14.iloc[-1]['multiple'])
+            median14 = limits14['median']
+            zone14 = ('Historically expensive' if current14 > limits14['high'] else
+                      'Historically attractive' if current14 < limits14['low'] else 'Mid-range')
+            v1,v2,v3 = st.columns(3)
+            v1.metric(f'Latest {metric_label}', f'{current14:.1f}×')
+            v2.metric('Historical median', f'{median14:.1f}×')
+            v3.metric('Relative valuation zone', zone14)
+            high14=max(1.2*limits14['high'],1.15*hist14.multiple.max())
+            graph14=go.Figure()
+            graph14.add_hrect(y0=0,y1=limits14['low'],fillcolor='rgba(74,171,112,.26)',line_width=0)
+            graph14.add_hrect(y0=limits14['low'],y1=limits14['high'],fillcolor='rgba(241,190,90,.22)',line_width=0)
+            graph14.add_hrect(y0=limits14['high'],y1=high14,fillcolor='rgba(225,91,112,.22)',line_width=0)
+            graph14.add_trace(go.Scatter(x=hist14.date,y=hist14.multiple,mode='lines',
+                                         name=f'{metric_label} ({method14})',
+                                         line=dict(color='#f5fbff',width=2.7),
+                                         hovertemplate=f'%{{x|%b %Y}}<br>{metric_label}: %{{y:.1f}}×<extra></extra>'))
+            graph14.add_hline(y=median14,line_dash='dot',line_color='#f5d77e',
+                              annotation_text=f'Median {median14:.1f}×')
+            graph14.update_yaxes(title_text=metric_label,range=[0,high14],ticksuffix='×')
+            st.plotly_chart(chart_theme(graph14,350),use_container_width=True,
+                            key=f'additional_valuation_{metric}')
+            st.caption(f'{len(hist14)} monthly observations '
+                       f'({hist14.date.min():%b %Y}–{hist14.date.max():%b %Y}); '
+                       f'most recent earnings/cash-flow filing {hist14.iloc[-1]["denom_filed"]:%b %d, %Y}. '
+                       f'Bands represent the 25th–75th percentile of available observations. '
+                       'SEC-filed data are never used before their filing date.')
+            with st.expander(f'{metric_label}: methods and assumptions'):
+                st.markdown('We multiply split-adjusted closing share price by '
+                            'SEC-reported diluted weighted-average shares, adjusted for subsequent '
+                            'splits, then divide by the positive SEC-reported financial denominator. '
+                            'Weighted-average shares are not actual daily market-cap shares. '
+                            'For P/FCF, capital spending is **subtracted**, never treated as zero '
+                            'when unreported. Quarterly figures are reconstructed from fiscal '
+                            'year-to-date filings, and all financial numbers enter only after '
+                            'their SEC filing dates. This is a **relative-history research tool**, '
+                            'not intrinsic value or an investment recommendation.')
 
 with st.expander('See the actual stock price chart (different from valuation!)'):
     period=st.select_slider('Price history',options=['1Y','3Y','5Y','10Y'],value='5Y')

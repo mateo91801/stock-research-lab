@@ -20,7 +20,7 @@ TAGS = {
     'operating_income': ('OperatingIncomeLoss',),
     'net_income': ('NetIncomeLoss', 'ProfitLoss'),
     'ocf': ('NetCashProvidedByUsedInOperatingActivities',),
-    'capex': ('PaymentsToAcquirePropertyPlantAndEquipment',),
+    'capex': ('PaymentsToAcquirePropertyPlantAndEquipment', 'PaymentsToAcquireProductiveAssets'),
     'dividends': ('PaymentsOfDividendsCommonStock', 'PaymentsOfDividends',
                   'PaymentsOfDividendsAndDividendEquivalentsOnCommonStockAndRestrictedStockUnits'),
     'shares': ('WeightedAverageNumberOfDilutedSharesOutstanding',
@@ -128,3 +128,23 @@ def load_financials(ticker: str, user_agent: str) -> tuple[dict, str]:
         series['fcf'] = pd.Series(dtype='float64')
     del series['capex']
     return series, raw.get('entityName', ticker)
+
+
+@lru_cache(maxsize=12)
+def load_sec_profile(ticker: str, user_agent: str) -> dict:
+    """Official SEC submissions *business address*; not a verified HQ narrative.
+
+    Avoid returning contact data as a private app secret. This is public filer
+    metadata. Absent data remain absent; no guessed business description.
+    """
+    if not valid_agent(user_agent):
+        raise RuntimeError('SEC_USER_AGENT is not configured with a contact email.')
+    cik = sec_cik(ticker, user_agent)
+    if not cik:
+        return {}
+    data = _download(f'https://data.sec.gov/submissions/CIK{cik:010d}.json', user_agent)
+    business = (data.get('addresses') or {}).get('business') or {}
+    parts = [business.get('city'), business.get('stateOrCountry')]
+    address = ', '.join(str(x).strip() for x in parts if x)
+    return {'sec_business_address': address,
+            'sec_filing_name': str(data.get('name') or '').strip()}

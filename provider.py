@@ -9,6 +9,7 @@ FIELDS = {
     'net_income': ('Net Income', 'Net Income Common Stockholders'),
     'ocf': ('Operating Cash Flow', 'Total Cash From Operating Activities'),
     'fcf': ('Free Cash Flow',),
+    'capex': ('Capital Expenditure', 'Capital Expenditures', 'Purchase Of PPE', 'Net PPE Purchase And Sale'),
     'dividends': ('Cash Dividends Paid', 'Common Stock Dividend Paid', 'Cash Dividends Paid to Common Stockholders'),
     'shares': ('Ordinary Shares Number', 'Common Stock Shares Outstanding'),
 }
@@ -71,26 +72,36 @@ def fetch_stock(ticker: str, sec_user_agent: str = "") -> dict:
         'net_income': row_from(income, FIELDS['net_income']),
         'ocf': row_from(cash, FIELDS['ocf']),
         'fcf': row_from(cash, FIELDS['fcf']),
+        'capex': row_from(cash, FIELDS['capex']),
         'dividends': row_from(cash, FIELDS['dividends']),
         'shares': row_from(balance, FIELDS['shares']),
     }
+    # If Yahoo has OCF and capex but no derived FCF, use one coherent
+    # Yahoo cash-flow statement for each matching fiscal year.
+    if values['fcf'].empty and not values['ocf'].empty and not values['capex'].empty:
+        common = values['ocf'].index.intersection(values['capex'].index)
+        if len(common):
+            # Cash outflow may be negative in Yahoo; use absolute expenditure.
+            values['fcf'] = (values['ocf'].loc[common] - values['capex'].loc[common].abs()).sort_index(ascending=False)
     # Yahoo sometimes returns prices and quote metadata but empty annual financials.
     # In that case use official SEC structured filings for US SEC registrants.
     source = 'Yahoo Finance (unofficial yfinance)'
     sec_status = ''
     valuation_facts = {}
     valuation_status = ''
-    if values['revenue'].empty or values['ocf'].empty or values['shares'].empty:
+    # Filling missing fields from SEC is useful even when Yahoo has enough
+    # revenue/OCF to populate the older dashboard (e.g. missing FCF).
+    if any(values[key].empty for key in ('revenue','ocf','shares','fcf','net_income','operating_income')):
         try:
             from sec_fundamentals import load_financials
             sec_values, company_from_sec = load_financials(ticker, sec_user_agent)
             for name, sec_series in sec_values.items():
-                if name in values and not sec_series.empty:
-                    # Prefer one internally consistent annual SEC dataset; do not
-                    # combine different reporting years from unrelated source sets.
+                if name in values and values[name].empty and not sec_series.empty:
+                    # Only fill a MISSING complete series. Do not mingle Yahoo
+                    # and SEC numbers across overlapping years inside one field.
                     values[name] = sec_series
-            if not values['revenue'].empty:
-                source = 'SEC EDGAR XBRL (annual financials) + Yahoo Finance (prices)'
+            if any(not series.empty for series in sec_values.values()):
+                source = 'SEC EDGAR and/or Yahoo Finance (annual financials) + Yahoo Finance (prices)'
             else:
                 sec_status = 'SEC filing response did not contain an annual revenue tag for this stock.'
             if not info.get('longName') and not info.get('shortName'):
@@ -104,6 +115,14 @@ def fetch_stock(ticker: str, sec_user_agent: str = "") -> dict:
         valuation_facts = load_companyfacts(ticker, sec_user_agent)
     except Exception as exc:
         valuation_status = str(exc)
+    # SEC public filer address is a useful fallback when Yahoo omits HQ.
+    sec_profile = {}
+    if not (info.get('city') and info.get('country')):
+        try:
+            from sec_fundamentals import load_sec_profile
+            sec_profile = load_sec_profile(ticker, sec_user_agent)
+        except Exception:
+            pass
     price.index = pd.to_datetime(price.index)
     if price.index.tz is not None: price.index = price.index.tz_localize(None)
     price = price.sort_index()
@@ -113,6 +132,7 @@ def fetch_stock(ticker: str, sec_user_agent: str = "") -> dict:
         'headquarters': ', '.join(str(x) for x in
             [info.get('city'), info.get('state'), info.get('country')] if x),
         'employees': info.get('fullTimeEmployees'),
+        'sec_business_address': sec_profile.get('sec_business_address') or '',
     }
     return {'ticker':ticker, 'company':info.get('longName') or info.get('shortName') or ticker,
             'profile':profile,
