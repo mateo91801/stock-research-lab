@@ -9,6 +9,7 @@ from analytics import (classify_phase, choose_profit_metric, format_billions,
                        yoy, annual_valuation, valuation_zones, STAGE_NAMES, STAGE_GUIDANCE)
 from provider import fetch_stock, align
 from valuation_history import monthly_valuation, annual_asfiled_monthly_valuation, distribution_bands
+from growth_analysis import cagr, percent_margin, last_two
 
 st.set_page_config(page_title="Stock Research Lab", page_icon="📈", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -31,7 +32,36 @@ st.markdown("""<style>
 .phase-track{display:flex;gap:5px;flex-wrap:wrap;margin:15px 0 7px}
 .phase-stop{flex:1;min-width:105px;padding:15px 8px;border-radius:11px;text-align:center;background:#182337;border:1px solid #2a364b;color:#9daec8;font-weight:650;font-size:12px}
 .phase-current{background:#173e37;border-color:#81d9b7;color:white;box-shadow:inset 0 0 0 1px #81d9b7}
-.sr-warning{font-size:13px;color:#adbcd3}
+/* Version 1.3 readability refresh — higher text contrast at every level */
+.stApp {background:#0b1020!important;color:#f5f8ff!important}
+.stApp, .stApp p, .stApp li, .stApp label,
+[data-testid="stMarkdownContainer"], [data-testid="stCaptionContainer"],
+[data-testid="stText"], [data-testid="stWidgetLabel"] {color:#ecf3ff!important}
+[data-testid="stCaptionContainer"] p, .stCaption, small {color:#c9d8ee!important}
+[data-testid="stMetricLabel"] p, [data-testid="stMetricLabel"] {color:#e0eafd!important;font-weight:680!important}
+[data-testid="stMetricValue"] {color:#ffffff!important}
+[data-testid="stMetricDelta"] {color:#b6e8d8!important}
+[data-baseweb="tab-list"] {gap:1rem;border-bottom:1px solid #42536d}
+[data-baseweb="tab"] {color:#dae7fc!important;font-weight:760!important;font-size:1rem!important}
+[data-baseweb="tab"]:hover {color:#ffffff!important;background:#1b2944!important}
+[data-baseweb="tab"][aria-selected="true"] {color:#ff818b!important}
+[data-baseweb="tab-highlight"] {background-color:#ff818b!important}
+[data-testid="stRadio"] label {color:#e8f0ff!important;font-weight:650!important}
+[data-testid="stExpander"] summary {color:#f8fbff!important;font-weight:700!important;background:#1a2a43!important;border-radius:10px}
+[data-testid="stExpander"] summary:hover {background:#263b57!important}
+[data-testid="stDataFrame"] {color:#f2f7ff}
+[data-testid="stTextInput"] input {background:#1a2840!important;color:#ffffff!important;border-color:#7f9bbb!important}
+.sr-head{color:#9df0d5!important}
+.sr-dim{color:#d2def3!important}
+.sr-pill{color:#dbfff0!important}
+.phase-stop{color:#e1ecff!important}
+.sr-warning{font-size:13px;color:#dbe8fb}
+.sr-section-note{font-size:14px;color:#d9e6f9;font-weight:550}
+.sr-kicker{font-size:13px;text-transform:uppercase;letter-spacing:.07em;font-weight:780;color:#b7f4de}
+.sr-info{background:#15243b;border:1px solid #485d79;border-radius:12px;padding:16px 20px;margin:10px 0;color:#f3f7ff}
+.sr-info p{color:#f0f6ff!important;margin:.35rem 0}
+.sr-statline{display:flex;flex-wrap:wrap;gap:18px;padding:10px 0;font-size:15px;font-weight:600;color:#eef6ff}
+.sr-loud{color:#ffffff!important;font-weight:800}
 </style>""", unsafe_allow_html=True)
 
 @st.cache_data(ttl=60*60*3, show_spinner=False)
@@ -46,11 +76,17 @@ def text_card(title, value, subtitle=''):
 
 
 def chart_theme(fig, height=335):
-    fig.update_layout(height=height, margin=dict(l=0,r=12,b=8,t=20),
+    fig.update_layout(height=height, margin=dict(l=12,r=18,b=15,t=72),
                       paper_bgcolor='#141d30', plot_bgcolor='#141d30',
-                      font=dict(color='#c7d5ea', size=12),
-                      hovermode='x unified', legend=dict(orientation='h',y=1.11,x=0),
-                      xaxis=dict(showgrid=False), yaxis=dict(gridcolor='#293348',zerolinecolor='#35445c'))
+                      font=dict(color='#f5f8ff', size=14, family='Arial, sans-serif'),
+                      hovermode='x unified',
+                      hoverlabel=dict(bgcolor='#1b2b45', bordercolor='#90aacd', font=dict(color='#ffffff',size=13)),
+                      legend=dict(orientation='h',y=1.14,x=0, font=dict(color='#f6f9ff',size=15),
+                                  bgcolor='rgba(18,28,46,.88)',bordercolor='#4a5d77',borderwidth=1),
+                      xaxis=dict(showgrid=False, tickfont=dict(color='#e5eeff',size=12),
+                                 title_font=dict(color='#f6f9ff')),
+                      yaxis=dict(gridcolor='#475674',zerolinecolor='#536681',
+                                 tickfont=dict(color='#e5eeff',size=12), title_font=dict(color='#f6f9ff')))
     return fig
 
 
@@ -62,7 +98,7 @@ def annual_frame(values):
         out[key] = align(values[key], dates) if dates else []
     return out
 
-st.markdown('<div class="sr-head">Independent research dashboard · v1.2.1</div>', unsafe_allow_html=True)
+st.markdown('<div class="sr-head">Independent research dashboard · v1.3</div>', unsafe_allow_html=True)
 st.markdown('<div class="sr-hero">Stock Research Lab <span style="color:#94dac2">↗</span></div>', unsafe_allow_html=True)
 st.markdown('<div class="sr-dim">Understand the business. Identify its lifecycle. Put today’s valuation in context.</div>', unsafe_allow_html=True)
 st.write('')
@@ -135,6 +171,40 @@ with mc[2]:
 with mc[3]: st.metric('Operating cash flow (FY)', format_billions(latest['ocf']) if latest is not None else 'N/A')
 
 st.write('')
+st.markdown('### Business overview')
+st.caption('Company profile details are supplied by Yahoo Finance and may be incomplete or out of date.')
+profile = d.get('profile') or {}
+col_b1, col_b2 = st.columns([1.7, 1])
+with col_b1:
+    description = (profile.get('description') or '').strip()
+    if description:
+        with st.container(border=True):
+            st.markdown('**What this business does**')
+            st.write(description)
+    else:
+        st.info('A verified company description was not returned by the free profile provider. '
+                'The financial metrics below are still available.')
+with col_b2:
+    with st.container(border=True):
+        st.markdown('**Company at a glance**')
+        st.write('**Sector:** ' + (d.get('sector') or 'Not available'))
+        st.write('**Industry:** ' + (d.get('industry') or 'Not available'))
+        st.write('**Headquarters:** ' + (profile.get('headquarters') or 'Not available'))
+        employees = profile.get('employees')
+        st.write('**Employees (reported):** ' + (f'{int(employees):,}' if isinstance(employees, (int, float)) and pd.notna(employees) and employees >= 0 else 'Not available'))
+        website = (profile.get('website') or '').strip()
+        if website.startswith(('https://','http://')):
+            st.link_button('Company website ↗', website)
+with st.expander('Revenue segments & customers — source coverage'):
+    st.write('**Segment revenue:** The free standardized financial data powering this version '
+             'does not provide a consistent breakdown by product or geographic segment. '
+             'We do not estimate segment percentages without a supporting filing.')
+    st.write('**Customers:** The business description above may mention customer types, '
+             'but we do not automatically infer or rank them.')
+    st.markdown('For a verified segment breakdown, check the company’s latest '
+                '[10-K annual filing on SEC EDGAR](https://www.sec.gov/edgar/search/), '
+                'especially the business and segment reporting notes.')
+
 st.markdown('### 1 · Company lifecycle')
 if phase:
     phase_cells = ''.join(f'<div class="phase-stop {"phase-current" if i==phase.stage else ""}">'
@@ -187,6 +257,50 @@ if not frame.empty:
     st.caption('Annual figures from the named data provider above. Fiscal-year-end dates are not earnings release dates.')
 else:
     st.info('Annual statements not available. For SEC-sourced annual data, configure SEC_USER_AGENT in your Streamlit app secrets with a real contact email. Some companies have limited standardized filings.')
+
+st.markdown('### Growth analysis')
+st.caption('Compound annual growth rates (CAGR) use matching fiscal-year periods. '
+           'If a year is missing, or earnings start or end at zero/negative values, we show N/A instead of a misleading growth rate.')
+if frame.empty:
+    st.info('Annual financial statements are required for the growth analysis.')
+else:
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown('#### Revenue growth')
+        k1, k2, k3 = st.columns(3)
+        for box, n, label in zip([k1,k2,k3], [1,3,5], ['1Y','3Y','5Y']):
+            res = cagr(v['revenue'], n)
+            box.metric(f'{label} CAGR', f'{res:+.1f}%' if res is not None else 'N/A')
+    with c2:
+        st.markdown('#### Net income growth')
+        k1, k2, k3 = st.columns(3)
+        for box, n, label in zip([k1,k2,k3], [1,3,5], ['1Y','3Y','5Y']):
+            res = cagr(v['net_income'], n)
+            box.metric(f'{label} CAGR', f'{res:+.1f}%' if res is not None else 'N/A')
+    st.markdown('#### Latest annual profitability')
+    c1, c2, c3 = st.columns(3)
+    if latest is not None:
+        margins = [percent_margin(latest.get('operating_income'), latest.get('revenue')),
+                   percent_margin(latest.get('net_income'), latest.get('revenue')),
+                   percent_margin(latest.get('fcf'), latest.get('revenue'))]
+        for target,label,value in zip([c1,c2,c3],
+                        ['Operating margin','Net income margin','Free cash flow margin'],margins):
+            target.metric(label, f'{value:+.1f}%' if value is not None else 'N/A')
+    st.markdown('#### Growth across fiscal years')
+    fig_growth=go.Figure()
+    gdates=frame['date'].dt.strftime('%Y')
+    fig_growth.add_trace(go.Bar(x=gdates, y=frame.revenue/1e9, name='Revenue (USD billions)',
+                                marker_color='#98eacb'))
+    fig_growth.update_yaxes(title_text='Annual revenue · USD billions')
+    st.plotly_chart(chart_theme(fig_growth, 300),use_container_width=True)
+    with st.expander('How CAGR and margins are calculated'):
+        st.markdown('**CAGR = (ending value ÷ starting value)^(1 / elapsed years) − 1.** '
+                    'We match actual fiscal-year dates rather than assuming consecutive rows '
+                    'represent consecutive years. Non-positive starting or ending earnings '
+                    'make conventional CAGR unsuitable; those fields display N/A. '
+                    '**Profit margin = reported annual profit ÷ annual revenue** '
+                    'and **FCF margin = reported free cash flow ÷ annual revenue**. '
+                    'Free cash flow may be estimated as operating cash flow minus capital spending.')
 
 st.markdown('### 3 · Historical valuation')
 st.caption('Historical price-to-operating-cash-flow (P/OCF) using split-adjusted month-end stock prices.\n\n'

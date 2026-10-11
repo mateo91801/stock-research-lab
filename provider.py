@@ -107,7 +107,15 @@ def fetch_stock(ticker: str, sec_user_agent: str = "") -> dict:
     price.index = pd.to_datetime(price.index)
     if price.index.tz is not None: price.index = price.index.tz_localize(None)
     price = price.sort_index()
+    profile = {
+        'description': str(info.get('longBusinessSummary') or '')[:4500],
+        'website': str(info.get('website') or ''),
+        'headquarters': ', '.join(str(x) for x in
+            [info.get('city'), info.get('state'), info.get('country')] if x),
+        'employees': info.get('fullTimeEmployees'),
+    }
     return {'ticker':ticker, 'company':info.get('longName') or info.get('shortName') or ticker,
+            'profile':profile,
             'sector':info.get('sector') or '', 'industry':info.get('industry') or '',
             'currency':info.get('currency') or 'USD', 'exchange':info.get('exchange') or '',
             'values':values, 'prices':price, 'splits':splits, 'dividends_history':dividends,
