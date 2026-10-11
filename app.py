@@ -15,6 +15,8 @@ from data_quality import fiscal_year, audit_rows
 from chart_helpers import revenue_cash_flow_figure
 from valuation_view import valuation_viewport, multiple_figure
 from investment_scorecard import analyze as evaluate_investment
+from beginner_guide import (lens_notes, selection_explanation, disagreement_explanation,
+                            verdict_in_one_sentence, score_coverage, next_steps)
 from research_explainer import (fiscal_yoy, headline_reading, growth_reading,
                                 margin_reading, valuation_reading,
                                 verification_reading, GLOSSARY)
@@ -77,7 +79,7 @@ st.markdown("""<style>
 .sr-note-14{font-size:.92rem;line-height:1.6;color:#e2edff!important}
 /* v1.5 high contrast, compact scorecard */
 .sr-score-wrap{background:#13243c;border:1px solid #547096;border-radius:14px;padding:17px;margin:12px 0}
-.sr-score-row{display:grid;grid-template-columns:minmax(150px,1fr) auto 34px;gap:14px;align-items:center;padding:10px 0;border-bottom:1px solid #32445e}
+.sr-score-row{display:grid;grid-template-columns:minmax(150px,1fr) auto 46px;gap:14px;align-items:center;padding:10px 0;border-bottom:1px solid #32445e}
 .sr-score-row:last-child{border-bottom:0}
 .sr-score-title{font-weight:700;color:#f2f7ff}
 .sr-score-note{font-size:12px;color:#d1e0f7;line-height:1.45}
@@ -89,7 +91,17 @@ st.markdown("""<style>
 .sr-verdict-head{font-size:18px;font-weight:750;color:white}
 .sr-gauge{height:20px;border-radius:8px;position:relative;overflow:visible;background:linear-gradient(90deg,#277d66 0%,#277d66 35%,#957e4a 35%,#957e4a 65%,#8f4d63 65%,#8f4d63 100%);border:1px solid #a1b6ce;margin:14px 0 8px}
 .sr-gauge-pointer{position:absolute;top:-6px;height:30px;border-left:3px solid #fff;filter:drop-shadow(0px 0px 3px #101827)}
-@media(max-width:660px){.sr-score-row{grid-template-columns:minmax(130px,1fr) auto 20px;gap:6px}.sr-score-dot{width:11px;height:10px}}
+/* v1.6 beginner valuation explanations; high contrast */
+.sr-learning-note{background:#192c46;border:1px solid #587a9e;border-radius:12px;padding:16px 19px;margin:12px 0;color:#f7fbff!important;line-height:1.65}
+.sr-lesson-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:13px 0}
+.sr-lesson{background:#172943;border:1px solid #526b8b;border-radius:12px;padding:16px;min-width:0}
+.sr-lesson-title{font-size:20px;font-weight:850;color:#ffffff!important;margin:4px 0}
+.sr-lesson-value{font-size:18px;font-weight:850;color:#fcfcff!important;margin:8px 0 2px}
+.sr-lesson-label{font-size:14px;font-weight:750;color:#b9f2de!important}
+.sr-lesson-sub{font-size:13px;color:#e1ecff!important;line-height:1.6;margin-top:6px}
+.sr-lesson-status{font-size:13px;font-weight:800;color:#f8daa1!important}
+@media(max-width:730px){.sr-lesson-list{grid-template-columns:1fr}}
+@media(max-width:660px){.sr-score-row{grid-template-columns:minmax(130px,1fr) auto 46px;gap:6px}.sr-score-dot{width:11px;height:10px}}
 </style>""", unsafe_allow_html=True)
 
 @st.cache_data(ttl=60*60*3, show_spinner=False)
@@ -712,11 +724,14 @@ report = evaluate_investment(v, histories=valuation_histories,
 verdict_color = {'BUY':'#9ce4ba', 'WATCH':'#f4d184', 'HOLD':'#bfd4ff',
                  'PASS':'#d8dce8', 'SELL':'#ff9ba1'}.get(report.verdict, '#ffffff')
 st.markdown(f'''<div class="sr-verdict">
-<div class="sr-head">Lab V1.5 · Automatic five-way verdict</div>
+<div class="sr-head">Lab V1.6 · Automatic five-way verdict</div>
 <div class="sr-verdict-label" style="color:{verdict_color}">{report.verdict}</div>
 <div class="sr-verdict-head">{html.escape(report.headline)}</div>
 <p style="color:#e3edff;line-height:1.65">{html.escape(report.explanation)}</p>
 </div>''', unsafe_allow_html=True)
+st.markdown('### Start here: what the verdict means')
+st.markdown(f'<div class="sr-learning-note">{html.escape(verdict_in_one_sentence(report.verdict))}</div>',
+            unsafe_allow_html=True)
 score_a, score_b, score_c = st.columns(3)
 score_a.metric('Business fundamentals (unweighted)',
                f'{report.quality:.2f} / 5' if report.quality is not None else 'Not rated',
@@ -725,6 +740,13 @@ score_b.metric('Historical valuation score',
                f'{report.valuation_rating} / 5' if report.valuation_rating is not None else 'Not rated',
                help='Higher number means the multiple is in a lower part of its own observed history.')
 score_c.metric('Evidence coverage', report.confidence)
+measured_count, all_categories, missing_categories = score_coverage(report.items)
+st.markdown(f'**Data completeness:** {measured_count} of {all_categories} business categories could be scored. '
+            'The score is an average of **only the measured categories**, not a complete company rating. '
+            'Missing information is **not** counted as zero.')
+if missing_categories:
+    st.info('**Still unmeasured:** ' + ', '.join(missing_categories) + '. '
+            'A high average score does not eliminate unknown financial risks.')
 st.markdown('#### How each category scored')
 ratings_html = ''
 for item in report.items:
@@ -737,8 +759,42 @@ for item in report.items:
     ratings_html += (f'<div class="sr-score-row"><div><div class="sr-score-title">{html.escape(item.name)}</div>'
                      f'<div class="sr-score-note">{html.escape(item.explanation)}</div></div>'
                      f'<div class="sr-score-dots">{dots}</div>'
-                     f'<div class="sr-score-digit">{rating if rating is not None else "—"}</div></div>')
+                     f'<div class="sr-score-digit">{rating if rating is not None else "N/A"}</div></div>')
 st.markdown('<div class="sr-score-wrap">' + ratings_html + '</div>', unsafe_allow_html=True)
+st.markdown('### Valuation made simple: three ways to look at price')
+st.caption('Each ratio compares market price with a different financial measure. A lower multiple '
+           'versus its OWN history can be interesting, but is never proof the stock is undervalued.')
+readings = lens_notes(valuation_histories, d.get('price_asof'))
+cards = []
+for lens in readings:
+    price_val = f'{lens.current:.1f}×' if lens.current is not None else 'N/A'
+    median_val = f'{lens.median:.1f}×' if lens.median is not None else 'N/A'
+    change = lens.relative_percent
+    trend = (f'{abs(change):.1f}% {"above" if change > 0 else "below"} its median'
+             if change is not None and abs(change) >= .05 else
+             'near its historical median' if change is not None else 'no dependable comparison')
+    chosen = ' · Used for verdict' if lens.label == report.valuation_lens else ''
+    cards.append('<div class="sr-lesson">'
+                 f'<div class="sr-lesson-label">{html.escape(lens.label)}{html.escape(chosen)}</div>'
+                 f'<div class="sr-lesson-title">{html.escape(lens.nickname)}</div>'
+                 f'<div class="sr-lesson-value">{html.escape(price_val)} '
+                 f'<span style="font-size:13px;font-weight:550;color:#d1e0f7">vs {html.escape(median_val)} median</span></div>'
+                 f'<div class="sr-lesson-status">{html.escape(lens.position_text)}</div>'
+                 f'<div class="sr-lesson-sub">{html.escape(trend)}. {html.escape(lens.meaning)}</div>'
+                 '</div>')
+st.markdown('<div class="sr-lesson-list">' + ''.join(cards) + '</div>',
+            unsafe_allow_html=True)
+st.markdown(selection_explanation(readings, report.valuation_lens))
+st.markdown(disagreement_explanation(readings, report.valuation_lens))
+with st.expander('Beginner tip: why earnings and cash flow can differ'):
+    st.markdown('''**Profit (P/E)** comes from accounting rules. **Operating cash (P/OCF)** tracks
+cash generated by running the business before large asset purchases. **Free cash flow (P/FCF)**
+subtracts capital spending from operating cash flow. A company may report strong profit and
+less free cash because it is investing heavily, because of timing, or for other reasons.
+A comparison alone cannot prove which cause is responsible. Read cash-flow statements
+and the notes before interpreting a gap. Higher or lower *relative to history* is
+not a fair-value calculation.''')
+
 if report.valuation_rating is not None:
     st.markdown('**Valuation score explained**')
     st.write(f'{report.valuation_lens}: **{report.valuation_multiple:.1f}×** versus a '
@@ -760,6 +816,10 @@ if report.valuation_rating is not None:
 else:
     st.info('Without a sufficiently complete and recent historical valuation series, '
             'the Lab will not issue a positive buying signal.')
+st.markdown('### What would need to change for a stronger verdict?')
+st.caption('These are the Lab’s checklist conditions, not predicted stock prices or advice to trade.')
+for n, step in enumerate(next_steps(report), 1):
+    st.markdown(f'**{n}.** {step}')
 if report.warnings:
     with st.expander('Data gaps and screen limitations', expanded=True):
         for msg in report.warnings: st.write('• ' + msg)
