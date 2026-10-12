@@ -141,7 +141,7 @@ def annual_frame(values):
         out[key] = align(values[key], dates) if dates else []
     return out
 
-st.markdown('<div class="sr-head">Independent research dashboard · v1.5</div>', unsafe_allow_html=True)
+st.markdown('<div class="sr-head">Independent research dashboard · v1.7</div>', unsafe_allow_html=True)
 st.markdown('<div class="sr-hero">Stock Research Lab <span style="color:#94dac2">↗</span></div>', unsafe_allow_html=True)
 st.markdown('<div class="sr-dim">Understand the business. Identify its lifecycle. Put today’s valuation in context.</div>', unsafe_allow_html=True)
 st.write('')
@@ -685,16 +685,33 @@ for metric, tab in [('pe',tab_pe), ('pfcf',tab_pfcf)]:
 
 # v1.5: Management snapshot — no inferred CEO tenure, founder status, or moat.
 st.markdown('### 5 · Management snapshot')
-st.caption('Optional Yahoo metadata may be delayed or incomplete. Leadership information and analyst '
+st.caption('CEO: Yahoo profile with a conservative SEC-filing fallback when available. Leadership information and analyst '
            'estimates are NOT sufficient to assign a management-skill rating.')
 management = d.get('management') or {}
 ceo = management.get('ceo') or {}
 insider_fraction = management.get('insider_fraction')
 mg1, mg2, mg3 = st.columns(3)
-mg1.metric('CEO (Yahoo)', ceo.get('name') or 'Not available')
+mg1.metric('CEO', ceo.get('name') or 'Not available')
 mg2.metric('CEO title', ceo.get('title') or 'Not available')
 mg3.metric('Insider ownership (Yahoo)',
            f'{insider_fraction*100:.1f}%' if isinstance(insider_fraction, (int, float)) else 'Not available')
+if ceo.get('name'):
+    ceo_source = ceo.get('source') or 'Third-party company profile'
+    ceo_asof = f' · filing date {ceo["asof"]}' if ceo.get('asof') else ' · undated provider information'
+    if ceo.get('source_url'):
+        st.caption(f'**CEO source:** [{ceo_source}]({ceo["source_url"]}){ceo_asof}. '
+                   'A filing verifies the executive as of its date—not necessarily today.')
+    else:
+        st.caption(f'**CEO source:** {ceo_source}{ceo_asof}.')
+else:
+    st.info('CEO information was not returned by Yahoo or confirmed from a recent accessible '
+            'SEC filing. This is a **source-coverage gap**, not a negative management rating. '
+            'A valid SEC_USER_AGENT contact in Streamlit Secrets enables the SEC fallback.')
+if not isinstance(insider_fraction, (int, float)):
+    st.caption('Insider ownership is unreported by this feed. The SEC DEF 14A proxy statement '
+               'often contains management ownership disclosures, but is not automatically '
+               'converted into a current total insider-ownership percentage. '
+               '[Review company SEC filings](https://www.sec.gov/edgar/search/).')
 results_eps = management.get('earnings_surprises') or []
 with st.expander('Earnings-per-share beats and misses · optional Yahoo feed', expanded=bool(results_eps)):
     if results_eps:
@@ -724,7 +741,7 @@ report = evaluate_investment(v, histories=valuation_histories,
 verdict_color = {'BUY':'#9ce4ba', 'WATCH':'#f4d184', 'HOLD':'#bfd4ff',
                  'PASS':'#d8dce8', 'SELL':'#ff9ba1'}.get(report.verdict, '#ffffff')
 st.markdown(f'''<div class="sr-verdict">
-<div class="sr-head">Lab V1.6 · Automatic five-way verdict</div>
+<div class="sr-head">Lab V1.7 · Automatic five-way verdict</div>
 <div class="sr-verdict-label" style="color:{verdict_color}">{report.verdict}</div>
 <div class="sr-verdict-head">{html.escape(report.headline)}</div>
 <p style="color:#e3edff;line-height:1.65">{html.escape(report.explanation)}</p>

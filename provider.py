@@ -153,10 +153,20 @@ def fetch_stock(ticker: str, sec_user_agent: str = "") -> dict:
             if not isinstance(person, dict):
                 continue
             title = str(person.get('title') or '').lower()
-            if 'chief executive officer' in title or title == 'ceo':
+            if 'chief executive officer' in title or re.search(r'\bceo\b', title):
                 executive = {'name': str(person.get('name') or '')[:100],
-                             'title': str(person.get('title') or '')[:150]}
+                             'title': str(person.get('title') or '')[:150],
+                             'source': 'Yahoo Finance company profile',
+                             'source_url': f'https://finance.yahoo.com/quote/{ticker}/profile/',
+                             'source_note': 'Unofficial company metadata; check company filings.'}
                 break
+    # v1.7: Supplement absent Yahoo executive data with a signed SEC filing.
+    if not executive or not executive.get('name'):
+        try:
+            from leadership_sources import sec_ceo_from_recent_filing
+            executive = sec_ceo_from_recent_filing(ticker, sec_user_agent) or None
+        except Exception:
+            executive = None
     held = info.get('heldPercentInsiders')
     try:
         held = float(held)
