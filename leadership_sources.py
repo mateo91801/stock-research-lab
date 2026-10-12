@@ -83,6 +83,52 @@ def extract_ceo_signature(document_html: str) -> dict:
     return dict(zip(('name', 'title'), next(iter(distinct.values())))) if len(distinct) == 1 else {}
 
 
+
+
+def extract_ceo_certification(document_html: str) -> dict:
+    """Parse a signed 10-K/10-Q Exhibit 31 CEO certification.
+
+    The signer must identify themselves in the first-person certification AND
+    sign under the same name. A CEO title must appear in the exhibit. We only
+    call this on SEC exhibit candidates; biographies and press releases are not
+    eligible evidence.
+    """
+    reader = _FilingText()
+    reader.feed(document_html)
+    document = unescape(' '.join(reader.text)).replace('\xa0', ' ')
+    document = re.sub(r'\s+', ' ', document)
+    if not re.search(r'\bchief executive officer\b', document, re.I):
+        return {}
+    candidates = []
+    pattern = r'\bI,\s*([A-Za-z][A-Za-z.\u2019\u0027\- ]{3,85}?)\s*,\s*certify\s+that\b'
+    for match in re.finditer(pattern, document, re.I):
+        name = re.sub(r'\s+', ' ', match.group(1)).strip()
+        if len(name.split()) < 2 or len(name.split()) > 6:
+            continue
+        if re.search(r'/s/\s*' + re.escape(name) + r'\b', document, re.I):
+            candidates.append(name)
+    distinct = {name.casefold(): name for name in candidates}
+    if len(distinct) != 1:
+        return {}
+    return {'name': next(iter(distinct.values())), 'title': 'Chief Executive Officer'}
+
+
+def _certification_documents(index_data: dict) -> list[str]:
+    """Choose only plausible 31.1 exhibit filenames from an SEC index.
+
+    This is a candidate filter, not evidence by itself: each candidate still
+    requires a matching first-person CEO certification and signature.
+    """
+    items = (index_data.get('directory') or {}).get('item') or []
+    names = []
+    for item in items:
+        name = str(item.get('name') or '') if isinstance(item, dict) else ''
+        if not re.fullmatch(r'[A-Za-z0-9_.-]{1,150}\.html?', name, re.I):
+            continue
+        if re.search(r'(?:ex(?:hibit)?[-_.]?31|31[-_.]?1|certif)', name, re.I):
+            names.append(name)
+    return names[:3]
+
 def _sec_get(url, user_agent, as_json):
     result = requests.get(url, timeout=15, headers={
         'User-Agent': user_agent,
@@ -133,19 +179,36 @@ def sec_ceo_from_recent_filing(ticker: str, sec_user_agent: str) -> dict:
             if not 0 <= age_days <= 540:
                 continue
             entries.append((str(filed), str(accession), str(document), form))
-        # Try the newest 10-Q/10-K and at most two others to limit network use.
-        for filed, accession, document, form in sorted(entries, reverse=True)[:3]:
-            url = (f'https://www.sec.gov/Archives/edgar/data/{cik}/'
-                   f'{accession.replace("-", "")}/{document}')
+        # Examine at most two recent filings. The main document can be signed
+        # only by a CFO; Exhibit 31.1 often separately certifies the CEO.
+        for filed, accession, document, form in sorted(entries, reverse=True)[:2]:
+            archive = (f'https://www.sec.gov/Archives/edgar/data/{cik}/'
+                       f'{accession.replace("-", "")}/')
+            url = archive + document
             try:
-                source = _sec_get(url, sec_user_agent, False)
-                ceo = extract_ceo_signature(source)
+                ceo = extract_ceo_signature(_sec_get(url, sec_user_agent, False))
             except (requests.RequestException, ValueError, UnicodeError):
-                continue
+                ceo = {}
             if ceo:
-                return {**ceo, 'source':f'SEC {form}',
-                        'asof':filed, 'source_url':url,
-                        'source_note':'Identified from a signed SEC filing; leadership may have changed afterward.'}
+                return {**ceo, 'source': f'SEC {form} signed filing',
+                        'asof': filed, 'source_url': url,
+                        'source_note': 'Signed SEC filing; office is verified on the filing date, not today.'}
+
+            try:
+                index = _sec_get(archive + 'index.json', sec_user_agent, True)
+                exhibits = _certification_documents(index)
+            except (requests.RequestException, ValueError, KeyError, TypeError):
+                exhibits = []
+            for exhibit in exhibits:
+                exhibit_url = archive + exhibit
+                try:
+                    ceo = extract_ceo_certification(_sec_get(exhibit_url, sec_user_agent, False))
+                except (requests.RequestException, ValueError, UnicodeError):
+                    continue
+                if ceo:
+                    return {**ceo, 'source': f'SEC {form} Exhibit 31 certification',
+                            'asof': filed, 'source_url': exhibit_url,
+                            'source_note': 'CEO certified and signed this filing; later leadership changes are possible.'}
         return {}
     except (requests.RequestException, ValueError, KeyError, TypeError, RuntimeError):
         return {}

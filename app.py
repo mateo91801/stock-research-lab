@@ -707,6 +707,23 @@ else:
     st.info('CEO information was not returned by Yahoo or confirmed from a recent accessible '
             'SEC filing. This is a **source-coverage gap**, not a negative management rating. '
             'A valid SEC_USER_AGENT contact in Streamlit Secrets enables the SEC fallback.')
+with st.expander('Beginner guide: where the CEO information comes from'):
+    st.markdown(
+        '**Why does this matter?** Leadership is worth researching, but a CEO name '
+        'by itself cannot tell us whether management is good at allocating money '
+        'or growing shareholder value.\n\n'
+        '**Where the Lab looks:** First, Yahoo Finance company-officer metadata. '
+        'If that is unavailable, the Lab checks recent SEC 10-K/10-Q signatures '
+        'and signed CEO certification exhibits. Filing-based names are dated: '
+        'they verify who signed on that date, **not necessarily today**.\n\n'
+        '**Why might a field still say Not available?** Data providers can omit '
+        'officers; SEC filings can be unavailable or inaccessible; or an executive '
+        'signature may not be clear enough to verify. The Lab deliberately avoids '
+        'guessing. Missing CEO or insider-ownership data are **not negative scores**.\n\n'
+        '**What to check next:** Open the cited filing or the company investor-relations '
+        'leadership page to verify current officeholders. Check a recent proxy '
+        'statement (DEF 14A) for executive compensation and ownership.'
+    )
 if not isinstance(insider_fraction, (int, float)):
     st.caption('Insider ownership is unreported by this feed. The SEC DEF 14A proxy statement '
                'often contains management ownership disclosures, but is not automatically '
