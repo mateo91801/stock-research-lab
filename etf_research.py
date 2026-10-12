@@ -5,6 +5,19 @@ import math
 import re
 import pandas as pd
 
+# Issuer-published fallback figures are deliberately limited to verified funds.
+# Prefer the live fund-operations feed, and show the issuer verification date.
+ISSUER_EXPENSE_RATIOS = {
+    "VOO": {
+        "ratio": 0.0003, "source": "Vanguard official ETF list (verified Oct 12, 2026)",
+        "url": "https://advisors.vanguard.com/investments/products/voo/vanguard-sp-500-etf",
+    },
+    "QQQM": {
+        "ratio": 0.0015, "source": "Invesco official Nasdaq-100 ETF information (verified Oct 12, 2026)",
+        "url": "https://www.invesco.com/us/en/solutions/innovation-suite.html",
+    },
+}
+
 POPULAR_ETFS = frozenset({
     "VOO", "QQQM", "QQQ", "VTI", "IVV", "SPY", "SPLG", "SPYM",
     "SCHD", "VUG", "VTV", "VGT", "VXUS", "VT", "BND", "AGG",
@@ -88,6 +101,33 @@ def _sector_rows(data):
     return sorted(out, key=lambda item: item["weight"], reverse=True)
 
 
+def _expense_from_fund_operations(operations):
+    """Return raw fractional expense ratio, excluding category-average columns."""
+    if not isinstance(operations, pd.DataFrame) or operations.empty:
+        return None
+    # A fund fee in Yahoo operations is ordinarily a fractional decimal
+    # (0.0003 means 0.03%). Some feeds return a formatted string instead.
+    def parse_fee(value):
+        if isinstance(value, str) and value.strip().endswith("%"):
+            try:
+                fraction = float(value.strip().rstrip("%").replace(",", "")) / 100
+                return fraction if 0 <= fraction <= .20 else None
+            except ValueError:
+                return None
+        return _fraction(value)
+    for label in ("Annual Report Expense Ratio", "Total Expense Ratio", "Net Expense Ratio"):
+        matches = [i for i in operations.index if str(i).strip().lower() == label.lower()]
+        if not matches:
+            continue
+        for col in operations.columns:
+            if "category" in str(col).lower() or "average" in str(col).lower():
+                continue
+            ratio = parse_fee(operations.loc[matches[0], col])
+            if ratio is not None and 0 <= ratio <= 0.20:
+                return ratio
+    return None
+
+
 def _annualized_return(adjusted: pd.Series, years: int):
     if not isinstance(adjusted, pd.Series) or adjusted.empty:
         return None
@@ -133,7 +173,7 @@ def fetch_etf(symbol: str) -> dict:
     symbol = clean_ticker(symbol)
     fund = yf.Ticker(symbol)
     try:
-        prices = fund.history(period="10y", interval="1d", auto_adjust=False, actions=False)
+        prices = fund.history(period="max", interval="1d", auto_adjust=False, actions=False)
     except Exception as exc:
         raise RuntimeError("The fund price history could not be retrieved right now.") from exc
     if not isinstance(prices, pd.DataFrame) or prices.empty or "Close" not in prices:
@@ -158,8 +198,10 @@ def fetch_etf(symbol: str) -> dict:
         if kind:
             raise ValueError(f"{symbol} is identified by the data provider as {kind}, not an ETF.")
 
+    operations = None
     try:
         fd = fund.funds_data
+        operations = fd.fund_operations
         holdings = _fund_rows(fd.top_holdings,
                              ("Holding Percent", "Holding Percentage", "Weight", "weight"),
                              ("Holding Name", "Name", "name"))
@@ -183,11 +225,19 @@ def fetch_etf(symbol: str) -> dict:
     price_points = pd.to_numeric(prices.Close, errors="coerce").dropna()
     if price_points.empty:
         raise RuntimeError("The price history had no usable closing prices.")
-    ratio = None
-    for field in ("annualReportExpenseRatio", "totalExpenseRatio"):
-        ratio = _fraction(info.get(field))
-        if ratio is not None:
-            break
+    ratio = _expense_from_fund_operations(operations)
+    fee_source = "Yahoo Finance ETF fund operations (unofficial)" if ratio is not None else ""
+    fee_url = f"https://finance.yahoo.com/quote/{symbol}/profile/"
+    if ratio is None:
+        for field in ("annualReportExpenseRatio", "totalExpenseRatio"):
+            ratio = _fraction(info.get(field))
+            if ratio is not None:
+                fee_source = "Yahoo Finance general quote data (unofficial)"
+                break
+    if ratio is None and symbol in ISSUER_EXPENSE_RATIOS:
+        official = ISSUER_EXPENSE_RATIOS[symbol]
+        ratio = official["ratio"]
+        fee_source, fee_url = official["source"], official["url"]
     assets = safe_number(info.get("totalAssets"))
     if assets is not None and assets < 0:
         assets = None
@@ -201,6 +251,7 @@ def fetch_etf(symbol: str) -> dict:
         "ticker": symbol, "name": str(info.get("longName") or info.get("shortName") or symbol),
         "price": float(price_points.iloc[-1]), "asof": str(price_points.index[-1].date()),
         "currency": str(info.get("currency") or "USD"), "expense_ratio": ratio,
+        "expense_source": fee_source, "expense_url": fee_url if ratio is not None else "",
         "assets": assets, "holdings": holdings, "sectors": sectors,
         "profile": profile, "prices": prices, "performance": performance(prices),
         "source": "Yahoo Finance via unofficial yfinance; coverage may be incomplete or delayed",

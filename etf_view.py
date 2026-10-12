@@ -20,6 +20,29 @@ def short_usd(value):
 def esc(value):
     return html.escape(str(value or ""))
 
+def readable_table(rows, headings):
+    """Readable dark-theme tables across Streamlit light/dark user preferences."""
+    style = (
+        '<style>.sr-etf-table-wrap{overflow-x:auto;margin:10px 0 18px}'
+        '.sr-etf-table{width:100%;border-collapse:collapse;background:#15253e;'
+        'border:1px solid #58799f;color:#f5f8ff;font-size:14px}'
+        '.sr-etf-table th{background:#26405e;color:#ffffff;font-weight:800;text-align:left}'
+        '.sr-etf-table th,.sr-etf-table td{padding:12px 10px;'
+        'border-bottom:1px solid #476080}'
+        '.sr-etf-table tr:nth-child(even) td{background:#1a304c}'
+        '.sr-etf-table td:last-child{text-align:right;font-weight:750}'
+        '</style>'
+    )
+    header = "".join("<th>" + esc(heading) + "</th>" for heading in headings)
+    body = "".join(
+        "<tr>" + "".join("<td>" + esc(value) + "</td>" for value in row) + "</tr>"
+        for row in rows
+    )
+    st.markdown(style + '<div class="sr-etf-table-wrap"><table class="sr-etf-table">'
+                + "<thead><tr>" + header + "</tr></thead><tbody>" + body
+                + "</tbody></table></div>", unsafe_allow_html=True)
+
+
 def show_etf_dashboard(fund):
     results = assessment(fund)
     st.markdown(
@@ -42,6 +65,13 @@ def show_etf_dashboard(fund):
         with col:
             st.metric(name, value)
 
+    if fund.get("expense_ratio") is not None:
+        fee_source = fund.get("expense_source") or "Provider (source date unavailable)"
+        fee_url = str(fund.get("expense_url") or "")
+        if fee_url.startswith("https://"):
+            st.markdown("**Expense-ratio source:** [" + esc(fee_source) + "](" + fee_url + ")")
+        else:
+            st.caption("Expense-ratio source: " + fee_source)
     st.markdown("#### The numbers, explained")
     st.write("**Expense ratio:** What you pay the fund annually as a share of the investment. "
              "A 0.03% fee works out to about 3 dollars per year for every 10,000 dollars invested. "
@@ -101,9 +131,10 @@ def show_etf_dashboard(fund):
             st.markdown("#### Largest investments")
             holdings = fund.get("holdings") or []
             if holdings:
-                table = pd.DataFrame([{"Symbol":r["symbol"],"Holding":r["name"],
-                                       "Weight":pct(r["weight"])} for r in holdings[:10]])
-                st.dataframe(table,hide_index=True,use_container_width=True)
+                readable_table(
+                    [(r["symbol"], r["name"], pct(r["weight"])) for r in holdings[:10]],
+                    ("Symbol", "Holding", "Weight"),
+                )
                 if len(holdings)<10:
                     st.info("Fewer than ten weights were available, so concentration is not scored.")
             else:
@@ -112,9 +143,10 @@ def show_etf_dashboard(fund):
             st.markdown("#### Sectors")
             sectors = fund.get("sectors") or []
             if sectors:
-                table = pd.DataFrame([{"Sector":r["name"],"Weight":pct(r["weight"],1)}
-                                      for r in sectors])
-                st.dataframe(table,hide_index=True,use_container_width=True)
+                readable_table(
+                    [(r["name"],pct(r["weight"],1)) for r in sectors],
+                    ("Sector", "Weight"),
+                )
                 st.caption("These provider-supplied categories may not add up to exactly 100%.")
             else:
                 st.info("Sector weights are not available from the provider.")

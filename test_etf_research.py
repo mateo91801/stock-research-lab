@@ -3,7 +3,7 @@ import unittest
 import pandas as pd
 from etf_research import (
     clean_ticker, is_etf_type, performance, assessment, _fund_rows,
-    _sector_rows, _annualized_return,
+    _sector_rows, _annualized_return, _expense_from_fund_operations, ISSUER_EXPENSE_RATIOS,
 )
 
 class ETFResearchTests(unittest.TestCase):
@@ -71,6 +71,30 @@ class ETFResearchTests(unittest.TestCase):
         result = assessment({"expense_ratio":.0003,"holdings":holdings,
                              "performance":{"returns":{5:8}}})
         self.assertEqual(result["verdict"], "PASS")
+
+    def test_etf_fund_operations_ratio_and_category_filter(self):
+        operations = pd.DataFrame({
+            "Fund": [0.0003], "Category Average": [0.008],
+        }, index=["Annual Report Expense Ratio"])
+        self.assertAlmostEqual(_expense_from_fund_operations(operations), 0.0003)
+        percent_string = pd.DataFrame({
+            "Fund": ["0.03%"], "Category Average": ["0.8%"],
+        }, index=["Annual Report Expense Ratio"])
+        self.assertAlmostEqual(_expense_from_fund_operations(percent_string), 0.0003)
+        self.assertIsNone(_expense_from_fund_operations(pd.DataFrame()))
+
+    def test_fund_issuer_fallbacks_are_explicit(self):
+        self.assertAlmostEqual(ISSUER_EXPENSE_RATIOS["VOO"]["ratio"], .0003)
+        self.assertAlmostEqual(ISSUER_EXPENSE_RATIOS["QQQM"]["ratio"], .0015)
+        self.assertIn("https://", ISSUER_EXPENSE_RATIOS["VOO"]["url"])
+
+    def test_full_ten_year_history_is_supported(self):
+        # Yahoo "10y" can be short by a trading day; v1.8.1 fetches the full history.
+        dates = pd.date_range("2016-10-05", "2026-10-09", freq="B")
+        prices = pd.Series([100 + i * .1 for i in range(len(dates))], index=dates)
+        result = performance(pd.DataFrame({"Adj Close": prices}))
+        self.assertIsNotNone(result["returns"][10])
+        self.assertGreater(result["returns"][10], 0)
 
     def test_midrange_hold_screen(self):
         holdings = [{"weight":.05}] * 10
