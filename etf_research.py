@@ -10,7 +10,7 @@ import pandas as pd
 ISSUER_EXPENSE_RATIOS = {
     "VOO": {
         "ratio": 0.0003, "source": "Vanguard official ETF list (verified Oct 12, 2026)",
-        "url": "https://investor.vanguard.com/investment-products/list/etfs",
+        "url": "https://advisors.vanguard.com/investments/products/voo/vanguard-sp-500-etf",
     },
     "QQQM": {
         "ratio": 0.0015, "source": "Invesco official Nasdaq-100 ETF information (verified Oct 12, 2026)",
@@ -105,6 +105,16 @@ def _expense_from_fund_operations(operations):
     """Return raw fractional expense ratio, excluding category-average columns."""
     if not isinstance(operations, pd.DataFrame) or operations.empty:
         return None
+    # A fund fee in Yahoo operations is ordinarily a fractional decimal
+    # (0.0003 means 0.03%). Some feeds return a formatted string instead.
+    def parse_fee(value):
+        if isinstance(value, str) and value.strip().endswith("%"):
+            try:
+                fraction = float(value.strip().rstrip("%").replace(",", "")) / 100
+                return fraction if 0 <= fraction <= .20 else None
+            except ValueError:
+                return None
+        return _fraction(value)
     for label in ("Annual Report Expense Ratio", "Total Expense Ratio", "Net Expense Ratio"):
         matches = [i for i in operations.index if str(i).strip().lower() == label.lower()]
         if not matches:
@@ -112,7 +122,7 @@ def _expense_from_fund_operations(operations):
         for col in operations.columns:
             if "category" in str(col).lower() or "average" in str(col).lower():
                 continue
-            ratio = _fraction(operations.loc[matches[0], col])
+            ratio = parse_fee(operations.loc[matches[0], col])
             if ratio is not None and 0 <= ratio <= 0.20:
                 return ratio
     return None
