@@ -8,6 +8,8 @@ import streamlit as st
 from analytics import (classify_phase, choose_profit_metric, format_billions,
                        yoy, annual_valuation, valuation_zones, STAGE_NAMES, STAGE_GUIDANCE)
 from provider import fetch_stock, align
+from etf_research import instrument_type, fetch_etf, clean_ticker
+from etf_view import show_etf_dashboard
 from valuation_history import monthly_valuation, annual_asfiled_monthly_valuation, distribution_bands
 from growth_analysis import cagr, percent_margin, last_two
 from valuation_metrics import usable_history
@@ -109,6 +111,16 @@ def cached_fetch(ticker: str, sec_user_agent: str):
     return fetch_stock(ticker, sec_user_agent=sec_user_agent)
 
 
+@st.cache_data(ttl=60*60, show_spinner=False)
+def cached_instrument_type(ticker: str):
+    return instrument_type(ticker)
+
+
+@st.cache_data(ttl=60*60*3, show_spinner=False)
+def cached_etf(ticker: str):
+    return fetch_etf(ticker)
+
+
 def text_card(title, value, subtitle=''):
     st.markdown(f'<div class="sr-card"><div class="sr-head">{html.escape(title)}</div>'
                 f'<div class="sr-hero">{html.escape(value)}</div><div class="sr-dim">{html.escape(subtitle)}</div></div>',
@@ -141,33 +153,48 @@ def annual_frame(values):
         out[key] = align(values[key], dates) if dates else []
     return out
 
-st.markdown('<div class="sr-head">Independent research dashboard · v1.7</div>', unsafe_allow_html=True)
+st.markdown('<div class="sr-head">Independent research dashboard · v1.8</div>', unsafe_allow_html=True)
 st.markdown('<div class="sr-hero">Stock Research Lab <span style="color:#94dac2">↗</span></div>', unsafe_allow_html=True)
-st.markdown('<div class="sr-dim">Understand the business. Identify its lifecycle. Put today’s valuation in context.</div>', unsafe_allow_html=True)
+st.markdown('<div class="sr-dim">Understand companies and ETFs. Learn what you own and how to interpret the numbers.</div>', unsafe_allow_html=True)
 st.write('')
 if 'ticker' not in st.session_state: st.session_state.ticker = 'GOOGL'
 with st.form('search', border=False):
     left, right = st.columns([5,1], vertical_alignment='bottom')
     with left:
-        ticker = st.text_input('U.S. stock ticker', value=st.session_state.ticker,
-                               help='Try GOOGL, AAPL, MSFT, NVDA, COST or BRK-B. Individual companies, not ETFs.')
+        ticker = st.text_input('U.S. stock or ETF ticker', value=st.session_state.ticker,
+                               help='Try VOO, QQQM, VTI, SPY, AAPL, MSFT, GOOGL or COST.')
     with right:
-        go_button = st.form_submit_button('Analyze stock', use_container_width=True, type='primary')
+        go_button = st.form_submit_button('Analyze investment', use_container_width=True, type='primary')
+    kind_override = st.selectbox(
+        'Research type', ['Detect automatically', 'ETF', 'Company stock'],
+        help='Automatic detection is recommended. Select ETF if the free provider cannot identify your fund.'
+    )
     if go_button: st.session_state.ticker = ticker.strip().upper()
 
 with st.expander('Quick examples', expanded=False):
-    st.caption('Enter any U.S. company ticker above: GOOGL · AAPL · MSFT · NVDA · COST · AMZN · BRK-B')
+    st.caption('ETFs: VOO · QQQM · VTI · SPY · SCHD · VXUS | Companies: GOOGL · AAPL · MSFT · NVDA · COST')
 
 try:
+    active_ticker = clean_ticker(st.session_state.ticker)
+    asset_type = ('ETF' if kind_override == 'ETF'
+                  else 'STOCK' if kind_override == 'Company stock'
+                  else cached_instrument_type(active_ticker))
+    if asset_type == 'ETF':
+        with st.spinner('Reading fund holdings, fees, risk and historical prices...'):
+            fund_data = cached_etf(active_ticker)
+        st.caption('Research type: ETF · automatic fund recognition (or chosen manually).')
+        show_etf_dashboard(fund_data)
+        st.stop()
     with st.spinner('Fetching market prices and annual financial statements...'):
         try:
             sec_ua = st.secrets.get('SEC_USER_AGENT', '')
         except Exception:
             sec_ua = ''
-        d = cached_fetch(st.session_state.ticker, sec_ua)
+        d = cached_fetch(active_ticker, sec_ua)
 except Exception as exc:
     st.error(f"Unable to analyze {st.session_state.ticker}: {exc}")
-    st.info('The app needs an internet connection. Yahoo may also temporarily throttle free requests. Please retry later.')
+    st.info('The app needs an internet connection. Yahoo may temporarily limit free requests. '
+            'Check the symbol, retry later, or select the research type manually if needed.')
     st.stop()
 
 if d.get('sec_status'):
