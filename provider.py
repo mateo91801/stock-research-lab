@@ -160,13 +160,21 @@ def fetch_stock(ticker: str, sec_user_agent: str = "") -> dict:
                              'source_url': f'https://finance.yahoo.com/quote/{ticker}/profile/',
                              'source_note': 'Unofficial company metadata; check company filings.'}
                 break
-    # v1.7: Supplement absent Yahoo executive data with a signed SEC filing.
-    if not executive or not executive.get('name'):
+    # If Yahoo omits its officers, try conservative signed-SEC evidence.
+    # Keep a human-readable status so network errors aren't mistaken for
+    # evidence that a company has no CEO.
+    if executive and executive.get('name'):
+        ceo_lookup_status = 'Yahoo Finance company-officer profile provided the CEO name; SEC fallback not needed.'
+    else:
         try:
-            from leadership_sources import sec_ceo_from_recent_filing
-            executive = sec_ceo_from_recent_filing(ticker, sec_user_agent) or None
+            from leadership_sources import sec_ceo_from_recent_filing_diagnostic
+            verified_ceo, detail = sec_ceo_from_recent_filing_diagnostic(ticker, sec_user_agent)
+            executive = verified_ceo or None
+            ceo_lookup_status = 'Yahoo did not return CEO officer metadata. ' + detail
         except Exception:
             executive = None
+            ceo_lookup_status = ('Yahoo did not return CEO officer metadata. The SEC lookup '
+                                 'encountered an unexpected error; check the Streamlit app logs.')
     held = info.get('heldPercentInsiders')
     try:
         held = float(held)
@@ -201,6 +209,7 @@ def fetch_stock(ticker: str, sec_user_agent: str = "") -> dict:
                                   'cash': float(cash_series.loc[bdate]),
                                   'source': 'Yahoo Finance yearly balance sheet'}
     management = {'ceo': executive, 'insider_fraction': held,
+                  'ceo_lookup_status': ceo_lookup_status,
                   'earnings_surprises': surprises,
                   'source': 'Yahoo Finance company profile and earnings calendar (unofficial)'}
     price.index = pd.to_datetime(price.index)
