@@ -8,7 +8,6 @@ that the person necessarily still holds the role today.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from functools import lru_cache
 from html import unescape
 from html.parser import HTMLParser
 import re
@@ -141,74 +140,127 @@ def _sec_get(url, user_agent, as_json):
     return result.json() if as_json else result.text
 
 
-@lru_cache(maxsize=50)
-def sec_ceo_from_recent_filing(ticker: str, sec_user_agent: str) -> dict:
-    """Only return CEO confirmed by a recent 10-Q/10-K signature.
+def _request_failure(exc: Exception) -> str:
+    """Safe, user-facing network status: never expose URLs or contact secrets."""
+    if isinstance(exc, requests.HTTPError):
+        status = getattr(getattr(exc, 'response', None), 'status_code', None)
+        if status in (403, 429):
+            return f'HTTP {status}: access denied or rate-limited'
+        if isinstance(status, int):
+            return f'HTTP {status}: SEC service request failed'
+    if isinstance(exc, requests.Timeout):
+        return 'request timed out'
+    if isinstance(exc, (requests.RequestException, ConnectionError)):
+        return 'network request failed'
+    return 'SEC response could not be read'
 
-    The SEC's XBRL *companyfacts* endpoint has NO CEO field. This therefore
-    reads a limited set of official filing documents, only when Yahoo is blank.
+
+def sec_ceo_from_recent_filing_diagnostic(ticker: str, sec_user_agent: str) -> tuple[dict, str]:
+    """Return (verified CEO, user-friendly diagnostic) without guessing.
+
+    Do not cache failures here: an SEC outage should not persist after recovery.
+    The caller can independently cache stock data for a bounded interval.
     """
     from sec_fundamentals import valid_agent, sec_cik
+
     if not valid_agent(sec_user_agent):
-        return {}
+        return {}, ('SEC lookup not started: SEC_USER_AGENT is missing or does not '
+                    'contain a valid contact email in Streamlit Secrets.')
+
     try:
         cik = sec_cik(ticker, sec_user_agent)
-        if not cik:
-            return {}
+    except (requests.RequestException, ValueError, KeyError, TypeError, RuntimeError) as exc:
+        return {}, ('SEC ticker directory unavailable (' + _request_failure(exc) +
+                    '). Retry later; check the Streamlit server logs if it persists.')
+    if not cik:
+        return {}, 'SEC lookup stopped: no SEC company identifier found for this ticker.'
+
+    try:
         submissions = _sec_get(
             f'https://data.sec.gov/submissions/CIK{cik:010d}.json',
             sec_user_agent, True,
         )
-        recent = (submissions.get('filings') or {}).get('recent') or {}
-        entries = []
-        for form, accession, document, filed in zip(
-            recent.get('form', []), recent.get('accessionNumber', []),
-            recent.get('primaryDocument', []), recent.get('filingDate', []),
-        ):
-            if form not in ('10-Q', '10-K'):
-                continue
-            if not re.fullmatch(r'\d{10}-\d{2}-\d{6}', str(accession)):
-                continue
-            if not re.fullmatch(r'[A-Za-z0-9_\-.]+\.html?', str(document), re.I):
-                continue
-            try:
-                age_days = (datetime.now(timezone.utc).date() -
-                            datetime.strptime(str(filed), '%Y-%m-%d').date()).days
-            except ValueError:
-                continue
-            if not 0 <= age_days <= 540:
-                continue
-            entries.append((str(filed), str(accession), str(document), form))
-        # Examine at most two recent filings. The main document can be signed
-        # only by a CFO; Exhibit 31.1 often separately certifies the CEO.
-        for filed, accession, document, form in sorted(entries, reverse=True)[:2]:
-            archive = (f'https://www.sec.gov/Archives/edgar/data/{cik}/'
-                       f'{accession.replace("-", "")}/')
-            url = archive + document
-            try:
-                ceo = extract_ceo_signature(_sec_get(url, sec_user_agent, False))
-            except (requests.RequestException, ValueError, UnicodeError):
-                ceo = {}
-            if ceo:
-                return {**ceo, 'source': f'SEC {form} signed filing',
-                        'asof': filed, 'source_url': url,
-                        'source_note': 'Signed SEC filing; office is verified on the filing date, not today.'}
+    except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
+        return {}, ('SEC submissions unavailable (' + _request_failure(exc) +
+                    '). The Lab cannot confirm an executive from filings right now.')
 
+    recent = (submissions.get('filings') or {}).get('recent') or {}
+    entries = []
+    for form, accession, document, filed in zip(
+        recent.get('form', []), recent.get('accessionNumber', []),
+        recent.get('primaryDocument', []), recent.get('filingDate', []),
+    ):
+        if form not in ('10-Q', '10-K'):
+            continue
+        if not re.fullmatch(r'\d{10}-\d{2}-\d{6}', str(accession)):
+            continue
+        if not re.fullmatch(r'[A-Za-z0-9_\-.]+\.html?', str(document), re.I):
+            continue
+        try:
+            age_days = (datetime.now(timezone.utc).date() -
+                        datetime.strptime(str(filed), '%Y-%m-%d').date()).days
+        except ValueError:
+            continue
+        if 0 <= age_days <= 540:
+            entries.append((str(filed), str(accession), str(document), form))
+
+    if not entries:
+        return {}, 'SEC submissions loaded, but no eligible 10-K or 10-Q filed within the last 540 days.'
+
+    failed_downloads = []
+    readable_documents = 0
+    # Limit requests to the two most recent eligible filings.
+    for filed, accession, document, form in sorted(entries, reverse=True)[:2]:
+        archive = (f'https://www.sec.gov/Archives/edgar/data/{cik}/'
+                   f'{accession.replace("-", "")}/')
+        url = archive + document
+        try:
+            html = _sec_get(url, sec_user_agent, False)
+            readable_documents += 1
+            ceo = extract_ceo_signature(html)
+        except (requests.RequestException, ValueError, UnicodeError) as exc:
+            failed_downloads.append(_request_failure(exc))
+            ceo = {}
+        if ceo:
+            return ({**ceo, 'source': f'SEC {form} signed filing',
+                     'asof': filed, 'source_url': url,
+                     'source_note': 'Signed SEC filing; title verified on filing date, not necessarily today.'},
+                    f'CEO verified in SEC {form} signature dated {filed}.')
+
+        try:
+            index = _sec_get(archive + 'index.json', sec_user_agent, True)
+            exhibits = _certification_documents(index)
+        except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
+            failed_downloads.append(_request_failure(exc))
+            exhibits = []
+        for exhibit in exhibits:
+            exhibit_url = archive + exhibit
             try:
-                index = _sec_get(archive + 'index.json', sec_user_agent, True)
-                exhibits = _certification_documents(index)
-            except (requests.RequestException, ValueError, KeyError, TypeError):
-                exhibits = []
-            for exhibit in exhibits:
-                exhibit_url = archive + exhibit
-                try:
-                    ceo = extract_ceo_certification(_sec_get(exhibit_url, sec_user_agent, False))
-                except (requests.RequestException, ValueError, UnicodeError):
-                    continue
-                if ceo:
-                    return {**ceo, 'source': f'SEC {form} Exhibit 31 certification',
-                            'asof': filed, 'source_url': exhibit_url,
-                            'source_note': 'CEO certified and signed this filing; later leadership changes are possible.'}
-        return {}
-    except (requests.RequestException, ValueError, KeyError, TypeError, RuntimeError):
-        return {}
+                html = _sec_get(exhibit_url, sec_user_agent, False)
+                readable_documents += 1
+                ceo = extract_ceo_certification(html)
+            except (requests.RequestException, ValueError, UnicodeError) as exc:
+                failed_downloads.append(_request_failure(exc))
+                continue
+            if ceo:
+                return ({**ceo, 'source': f'SEC {form} Exhibit 31 certification',
+                         'asof': filed, 'source_url': exhibit_url,
+                         'source_note': 'CEO signed certification; later leadership changes are possible.'},
+                        f'CEO verified in SEC {form} Exhibit 31 dated {filed}.')
+
+    if failed_downloads:
+        detail = '; '.join(sorted(set(failed_downloads)))
+        if not readable_documents:
+            return {}, ('SEC filings were located, but their archive files could not '
+                        f'be downloaded ({detail}). This may be a temporary access restriction.')
+        return {}, ('Some SEC documents were read, but other filing files were inaccessible '
+                    f'({detail}); no unambiguous signed CEO was verified.')
+
+    return {}, ('Recent SEC filing documents were read, but no unambiguous CEO signature '
+                'or CEO-signed Exhibit 31 certification was found. The Lab will not guess.')
+
+
+def sec_ceo_from_recent_filing(ticker: str, sec_user_agent: str) -> dict:
+    """Backward-compatible verified CEO lookup for callers needing only the record."""
+    result, _ = sec_ceo_from_recent_filing_diagnostic(ticker, sec_user_agent)
+    return result

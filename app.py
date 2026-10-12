@@ -707,6 +707,14 @@ else:
     st.info('CEO information was not returned by Yahoo or confirmed from a recent accessible '
             'SEC filing. This is a **source-coverage gap**, not a negative management rating. '
             'A valid SEC_USER_AGENT contact in Streamlit Secrets enables the SEC fallback.')
+with st.expander('CEO lookup status · why information may be missing', expanded=not bool(ceo.get('name'))):
+    st.write(management.get('ceo_lookup_status') or
+             'Lookup details are not available from this run. Refresh the stock to retry.')
+    st.caption('This reports data availability, not management quality. SEC documents can show '
+               'who signed a filing on a given date, but not necessarily who leads the company today.')
+    if st.button('Retry CEO lookup · refresh stock data', key='retry_ceo_lookup'):
+        cached_fetch.clear()
+        st.rerun()
 with st.expander('Beginner guide: where the CEO information comes from'):
     st.markdown(
         '**Why does this matter?** Leadership is worth researching, but a CEO name '
